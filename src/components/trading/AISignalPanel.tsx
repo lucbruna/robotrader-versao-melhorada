@@ -17,11 +17,14 @@ import {
   Waves,
   Send,
   MessageCircle,
+  BookOpen,
+  RefreshCw,
 } from "lucide-react";
 import { useServerFn } from "@tanstack/react-start";
 import { getAISignal, type AIDecision } from "@/lib/ai-signal.functions";
 import {
   fetchAISignal,
+  fetchExplanation,
   isElectron,
   telegramSendSignal,
   telegramStatus,
@@ -53,6 +56,11 @@ export function AISignalPanel({
   const [tgAuto, setTgAuto] = useState(true);
   const [tgSending, setTgSending] = useState(false);
   const [tgLastResult, setTgLastResult] = useState<string | null>(null);
+  // #14 — LLM explainer
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explaining, setExplaining] = useState(false);
+  const [explainErr, setExplainErr] = useState<string | null>(null);
+  const [explainCacheKey, setExplainCacheKey] = useState<string | null>(null);
 
   const refresh = async () => {
     if (!ticker) return;
@@ -140,10 +148,72 @@ export function AISignalPanel({
     }
   };
 
+  // #14 — LLM explainer: builds the explainer payload from the same context
+  // the AI decision used, then asks the server for a 2-4 sentence PT-BR
+  // explanation. Result is cached by (action, score, regime, AI action)
+  // for the lifetime of this panel instance to avoid re-billing on toggle.
+  const buildExplainPayload = () => {
+    // Pull top 3 local reasons for the prompt
+    const localReasons = (local.reasons ?? []).slice(0, 5);
+    return {
+      symbol,
+      interval,
+      price: snap.price,
+      rsi: snap.rsi,
+      macdHist: snap.macdHist,
+      ema20: snap.ema20,
+      ema50: snap.ema50,
+      ema200: snap.ema200,
+      adx: snap.adx,
+      plusDI: snap.plusDI,
+      minusDI: snap.minusDI,
+      atr: snap.atr,
+      atrPct: snap.atrPct,
+      bbWidth: snap.bbWidth,
+      stochK: snap.stochK,
+      stochD: snap.stochD,
+      volRegime: snap.volRegime,
+      structure: snap.structure,
+      localAction: local.action,
+      localScore: local.score,
+      localConfidence: local.confidence,
+      localReasons,
+      // Confluence/regime are computed upstream by ConfluenceGauge /
+      // RegimeDetector; here we provide reasonable defaults so the explainer
+      // works even when those panels haven't loaded yet.
+      confluenceScore: 50,
+      confluenceTone: "neutral" as const,
+      regime: "RANGE" as const,
+      aiAction: ai?.action ?? null,
+      aiConfidence: ai?.confidence ?? null,
+      aiRationale: ai?.rationale ?? null,
+    };
+  };
+
+  const doExplain = async () => {
+    if (explaining) return;
+    setExplaining(true);
+    setExplainErr(null);
+    try {
+      const payload = buildExplainPayload();
+      const key = `${payload.localAction}|${Math.round(payload.localScore)}|${payload.localConfidence}|${payload.regime}|${payload.aiAction ?? "-"}`;
+      setExplainCacheKey(key);
+      const r = await fetchExplanation(payload);
+      setExplanation(r.explanation);
+    } catch (e) {
+      setExplainErr(e instanceof Error ? e.message : "Erro ao explicar");
+    } finally {
+      setExplaining(false);
+    }
+  };
+
   // auto-refresh every 60s on symbol/interval change
   useEffect(() => {
     setAI(null);
     setErr(null);
+    setExplanation(null);
+    setExplainErr(null);
+    setExplainCacheKey(null);
     if (!ticker) return;
     refresh();
     const id = setInterval(refresh, 60000);
@@ -312,6 +382,46 @@ export function AISignalPanel({
               <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
                 {ai.rationale}
               </p>
+              {/* #14 — LLM explainer */}
+              <div className="mt-2.5 rounded border border-border/60 bg-background/40 p-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                    <BookOpen className="size-3" /> Explicar com IA
+                  </div>
+                  <button
+                    onClick={doExplain}
+                    disabled={explaining}
+                    className="flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[10px] text-foreground hover:bg-accent/70 disabled:opacity-50"
+                  >
+                    {explaining ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : explanation ? (
+                      <RefreshCw className="size-3" />
+                    ) : (
+                      <Sparkles className="size-3" />
+                    )}
+                    {explaining
+                      ? "Gerando…"
+                      : explanation
+                        ? "Regerar"
+                        : "Explicar"}
+                  </button>
+                </div>
+                {explainErr && (
+                  <div className="mt-1 text-[10px] text-bear">{explainErr}</div>
+                )}
+                {explanation && (
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-foreground/90">
+                    {explanation}
+                  </p>
+                )}
+                {!explanation && !explaining && !explainErr && (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    Pede ao LLM uma explicação curta em PT-BR do porquê deste
+                    setup, citando os indicadores mais relevantes.
+                  </p>
+                )}
+              </div>
               <div className="mt-2.5 grid grid-cols-3 gap-1.5 text-[10px]">
                 <Pill label="Entry" value={ai.entry} />
                 <Pill

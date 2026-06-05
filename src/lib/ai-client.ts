@@ -2,7 +2,12 @@
 // In Electron: routes through IPC (env var stays in main process).
 // In web: routes through the TanStack server function (env var on server).
 
-import { getAISignal } from "@/lib/ai-signal.functions";
+import {
+  explainSignal,
+  getAISignal,
+  type ExplainInput,
+  type ExplainResult,
+} from "@/lib/ai-signal.functions";
 
 type AIPayload = Parameters<typeof getAISignal>[0]["data"];
 
@@ -94,6 +99,14 @@ export async function fetchAISignal(
     >;
   }
   return await getAISignal({ data });
+}
+
+// ---- LLM explainer (#14) ----
+
+export async function fetchExplanation(
+  data: ExplainInput,
+): Promise<ExplainResult> {
+  return await explainSignal({ data });
 }
 
 // ---- Telegram helpers (Electron-only — returns null in web) ----

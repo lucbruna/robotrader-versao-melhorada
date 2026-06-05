@@ -366,3 +366,227 @@ function synthesize(
     ttl: 240,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Signal explainer (#14) — natural-language explanation of the current setup
+// ---------------------------------------------------------------------------
+
+const ExplainInputSchema = z.object({
+  symbol: z.string(),
+  interval: z.string(),
+  price: z.number(),
+  // Same core context as getAISignal
+  rsi: z.number().nullable(),
+  macdHist: z.number().nullable(),
+  ema20: z.number().nullable(),
+  ema50: z.number().nullable(),
+  ema200: z.number().nullable(),
+  adx: z.number().nullable(),
+  plusDI: z.number().nullable(),
+  minusDI: z.number().nullable(),
+  atr: z.number().nullable(),
+  atrPct: z.number().nullable(),
+  bbWidth: z.number().nullable(),
+  stochK: z.number().nullable(),
+  stochD: z.number().nullable(),
+  volRegime: z.enum(["LOW", "NORMAL", "HIGH", "EXTREME"]),
+  structure: z.enum(["UP", "DOWN", "RANGE"]),
+  // Decision context
+  localAction: z.enum(["BUY", "SELL", "HOLD"]),
+  localScore: z.number(), // -100..100
+  localConfidence: z.number(), // 0..100
+  localReasons: z.array(z.string()),
+  // Confluence + regime
+  confluenceScore: z.number(), // 0..100
+  confluenceTone: z.enum(["bullish", "bearish", "neutral"]),
+  regime: z.enum(["BULL_TREND", "BEAR_TREND", "RANGE", "VOLATILE"]),
+  // AI decision (optional — if present, explain it; if not, just explain the setup)
+  aiAction: z.enum(["BUY", "SELL", "HOLD", "CLOSE"]).nullable(),
+  aiConfidence: z.number().nullable(),
+  aiRationale: z.string().nullable(),
+});
+
+export type ExplainInput = z.infer<typeof ExplainInputSchema>;
+
+export type ExplainResult = {
+  explanation: string;
+  /** Key points the LLM highlighted, useful for tooltips / bullets. */
+  highlights: string[];
+  /** True if the model refused or returned a fallback. */
+  fallback: boolean;
+  /** Wall-clock duration in ms. */
+  durationMs: number;
+};
+
+export const explainSignal = createServerFn({ method: "POST" })
+  .inputValidator((d: ExplainInput) => ExplainInputSchema.parse(d))
+  .handler(async ({ data }): Promise<ExplainResult> => {
+    const t0 = Date.now();
+    const apiKey = process.env.LOVABLE_API_KEY;
+
+    // Local fallback: synthesise a deterministic 1-paragraph explanation
+    // from the indicators so the feature always works.
+    const fallbackText = synthesizeExplanation(data);
+    const fallback: ExplainResult = {
+      explanation: fallbackText,
+      highlights: extractHighlights(data),
+      fallback: true,
+      durationMs: Date.now() - t0,
+    };
+
+    if (!apiKey) return fallback;
+
+    const system = `Você é um analista técnico que escreve explicações claras e curtas em português brasileiro para traders. Receberá um snapshot de indicadores + o sinal local e (opcionalmente) a decisão da IA. Sua tarefa é explicar POR QUE o setup está como está.
+
+REGRAS:
+- Texto curto: 2-4 frases, no MÁXIMO 380 caracteres.
+- Cite APENAS indicadores relevantes (RSI, MACD, EMA, ADX, BB, estrutura). Não invente números.
+- Se a IA discorda do sinal local, mencione brevemente.
+- NÃO use markdown, listas, JSON ou aspas. Apenas texto corrido.
+- NÃO dê conselho financeiro. Termine com "Análise automatizada, não é recomendação."`;
+
+    const userMsg = formatExplainPrompt(data);
+
+    try {
+      const res = await fetch(
+        "https://ai.gateway.lovable.dev/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "google/gemini-3-flash-preview",
+            messages: [
+              { role: "system", content: system },
+              { role: "user", content: userMsg },
+            ],
+            temperature: 0.4,
+            max_tokens: 220,
+          }),
+        },
+      );
+      if (!res.ok) return fallback;
+      const json = (await res.json()) as {
+        choices?: { message?: { content?: string } }[];
+      };
+      const text = json.choices?.[0]?.message?.content?.trim();
+      if (!text || text.length < 20) return fallback;
+
+      return {
+        explanation: text.slice(0, 600),
+        highlights: extractHighlights(data),
+        fallback: false,
+        durationMs: Date.now() - t0,
+      };
+    } catch {
+      return fallback;
+    }
+  });
+
+function formatExplainPrompt(d: ExplainInput): string {
+  const fmt = (n: number | null, p = 2) => (n === null ? "n/d" : n.toFixed(p));
+  const parts: string[] = [];
+  parts.push(`# ${d.symbol} ${d.interval} @ ${fmt(d.price)}`);
+  parts.push("");
+  parts.push("Sinal local:");
+  parts.push(`- action: ${d.localAction}`);
+  parts.push(`- score: ${d.localScore.toFixed(0)} (-100..100)`);
+  parts.push(`- confidence: ${d.localConfidence.toFixed(0)}%`);
+  if (d.localReasons.length > 0) {
+    parts.push(`- reasons: ${d.localReasons.slice(0, 5).join("; ")}`);
+  }
+  parts.push("");
+  parts.push("Contexto:");
+  parts.push(`- regime: ${d.regime}`);
+  parts.push(
+    `- confluence: ${d.confluenceScore.toFixed(0)} (${d.confluenceTone})`,
+  );
+  parts.push(`- volRegime: ${d.volRegime}`);
+  parts.push(`- structure: ${d.structure}`);
+  parts.push("");
+  parts.push("Indicadores:");
+  parts.push(
+    `- RSI: ${fmt(d.rsi)} | MACD hist: ${fmt(d.macdHist, 4)} | Stoch K/D: ${fmt(d.stochK)}/${fmt(d.stochD)}`,
+  );
+  parts.push(
+    `- EMA 20/50/200: ${fmt(d.ema20)} / ${fmt(d.ema50)} / ${fmt(d.ema200)}`,
+  );
+  parts.push(
+    `- ADX: ${fmt(d.adx)} (+DI ${fmt(d.plusDI)} / -DI ${fmt(d.minusDI)})`,
+  );
+  parts.push(
+    `- ATR: ${fmt(d.atr)} (${d.atrPct !== null ? (d.atrPct * 100).toFixed(2) + "%" : "n/d"}) | BB width: ${d.bbWidth !== null ? (d.bbWidth * 100).toFixed(1) + "%" : "n/d"}`,
+  );
+  if (d.aiAction) {
+    parts.push("");
+    parts.push("IA:");
+    parts.push(`- action: ${d.aiAction} (${d.aiConfidence ?? 0}%)`);
+    if (d.aiRationale)
+      parts.push(`- rationale: ${d.aiRationale.slice(0, 200)}`);
+  }
+  return parts.join("\n");
+}
+
+function synthesizeExplanation(d: ExplainInput): string {
+  // Deterministic local fallback — pulls 2-3 salient points.
+  const bits: string[] = [];
+  const dir =
+    d.localAction === "BUY"
+      ? "compra"
+      : d.localAction === "SELL"
+        ? "venda"
+        : "aguardar";
+
+  if (d.structure === "UP" && d.localAction === "BUY") {
+    bits.push("estrutura em alta (HH/HL)");
+  } else if (d.structure === "DOWN" && d.localAction === "SELL") {
+    bits.push("estrutura em baixa (LH/LL)");
+  } else if (d.structure === "RANGE") {
+    bits.push("mercado lateralizado");
+  }
+
+  if (d.rsi !== null) {
+    if (d.rsi < 30) bits.push(`RSI ${d.rsi.toFixed(0)} sobrevendido`);
+    else if (d.rsi > 70) bits.push(`RSI ${d.rsi.toFixed(0)} sobrecomprado`);
+  }
+
+  if (d.adx !== null && d.adx > 25) {
+    bits.push(`ADX ${d.adx.toFixed(0)} confirma força da tendência`);
+  } else if (d.adx !== null && d.adx < 20) {
+    bits.push(`ADX ${d.adx.toFixed(0)} fraco, sem direção clara`);
+  }
+
+  if (d.volRegime === "EXTREME" || d.volRegime === "HIGH") {
+    bits.push(`volatilidade ${d.volRegime.toLowerCase()}`);
+  }
+
+  if (d.aiAction && d.aiAction !== d.localAction && d.aiAction !== "HOLD") {
+    bits.push(`IA discorda e sugere ${d.aiAction}`);
+  }
+
+  const reason = bits.length > 0 ? bits.join(", ") : "indicadores neutros";
+  return `Sinal local indica ${dir} baseado em ${reason}. Confluence ${d.confluenceScore.toFixed(0)} (${d.confluenceTone}), regime ${d.regime}. Análise automatizada, não é recomendação.`;
+}
+
+function extractHighlights(d: ExplainInput): string[] {
+  const out: string[] = [];
+  if (d.rsi !== null) {
+    if (d.rsi < 30) out.push(`RSI sobrevendido (${d.rsi.toFixed(0)})`);
+    else if (d.rsi > 70) out.push(`RSI sobrecomprado (${d.rsi.toFixed(0)})`);
+  }
+  if (d.adx !== null) {
+    if (d.adx > 25) out.push(`ADX forte (${d.adx.toFixed(0)})`);
+    else if (d.adx < 20) out.push(`ADX fraco (${d.adx.toFixed(0)})`);
+  }
+  if (d.macdHist !== null) {
+    if (d.macdHist > 0) out.push("MACD positivo");
+    else if (d.macdHist < 0) out.push("MACD negativo");
+  }
+  out.push(`Regime: ${d.regime}`);
+  if (d.localReasons.length > 0) {
+    out.push(d.localReasons[0]);
+  }
+  return out.slice(0, 5);
+}
