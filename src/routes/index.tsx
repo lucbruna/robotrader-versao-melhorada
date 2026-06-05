@@ -1,10 +1,11 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Bot,
   Sparkles,
   Settings as SettingsIcon,
+  FlaskConical,
 } from "lucide-react";
 import {
   DEFAULT_SYMBOLS,
@@ -239,6 +240,13 @@ function Dashboard() {
             ao vivo
           </div>
           <WSStatusBadge />
+          <Link
+            to="/backtest"
+            className="flex size-7 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
+            title="Backtest"
+          >
+            <FlaskConical className="size-3.5" />
+          </Link>
           <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
             <DialogTrigger asChild>
               <button
