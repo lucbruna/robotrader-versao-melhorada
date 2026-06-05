@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   isElectron: true,
   platform: process.platform,
   getAISignal: (data) => ipcRenderer.invoke("ai:getSignal", data),
+  getAIConsensus: (data) => ipcRenderer.invoke("ai:getConsensus", data),
   telegram: {
     status: () => ipcRenderer.invoke("telegram:status"),
     send: (text, parseMode) =>

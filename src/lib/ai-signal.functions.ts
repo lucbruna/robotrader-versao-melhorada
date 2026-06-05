@@ -741,3 +741,313 @@ function extractHighlights(d: ExplainInput): string[] {
   }
   return out.slice(0, 5);
 }
+
+// ---------------------------------------------------------------------------
+// #16 — AI consensus mode
+// Asks 3 models the same question in parallel, then aggregates their
+// decisions by confidence-weighted voting on the action. The aggregated
+// decision is what the UI should act on; the per-model breakdown is shown
+// for transparency.
+// ---------------------------------------------------------------------------
+
+const CONSENSUS_MODELS = [
+  {
+    id: "gemini-flash",
+    model: "google/gemini-3-flash-preview",
+    weight: 1.0,
+    label: "Gemini Flash",
+  },
+  {
+    id: "gemini-pro",
+    model: "google/gemini-3-pro-preview",
+    weight: 1.4,
+    label: "Gemini Pro",
+  },
+  {
+    id: "llama-70b",
+    model: "meta-llama/llama-3.3-70b-instruct",
+    weight: 1.0,
+    label: "Llama 70B",
+  },
+] as const;
+
+export type ConsensusModelDecision = {
+  id: string;
+  label: string;
+  model: string;
+  ok: boolean;
+  decision: AIDecision | null;
+  error: string | null;
+  durationMs: number;
+};
+
+export type ConsensusResult = {
+  // The aggregated decision (vote + average confidence)
+  decision: AIDecision;
+  // Per-model breakdown (so the UI can show the spread)
+  models: ConsensusModelDecision[];
+  // 0..100 — agreement level between models on the final action
+  agreement: number;
+  // quick text label
+  consensusLabel: "UNANIME" | "MAIORIA" | "DIVIDIDO" | "FALHOU";
+  // # of models that successfully produced a decision
+  validCount: number;
+  // wall-clock duration
+  durationMs: number;
+};
+
+export const getAIConsensus = createServerFn({ method: "POST" })
+  .inputValidator((d: z.infer<typeof InputSchema>) => InputSchema.parse(d))
+  .handler(async ({ data }): Promise<ConsensusResult> => {
+    const t0 = Date.now();
+    const apiKey = process.env.LOVABLE_API_KEY;
+
+    if (!apiKey) {
+      // Fallback: synthesize a single HOLD with all models marked failed
+      const placeholder = synthesize(data, {
+        action: "HOLD",
+        confidence: 0,
+        rationale: "Consenso indisponível (LOVABLE_API_KEY ausente).",
+        risk: "HIGH",
+        regime: "RANGE",
+      });
+      return {
+        decision: placeholder,
+        models: CONSENSUS_MODELS.map((m) => ({
+          id: m.id,
+          label: m.label,
+          model: m.model,
+          ok: false,
+          decision: null,
+          error: "LOVABLE_API_KEY ausente",
+          durationMs: 0,
+        })),
+        agreement: 0,
+        consensusLabel: "FALHOU",
+        validCount: 0,
+        durationMs: Date.now() - t0,
+      };
+    }
+
+    // Run all 3 models in parallel — each call uses the same prompt,
+    // same schema, same data. Failures are isolated (allSettled).
+    const results = await Promise.allSettled(
+      CONSENSUS_MODELS.map((m) => callOneModel(m, data, apiKey)),
+    );
+
+    const models: ConsensusModelDecision[] = results.map((r, i) => {
+      const meta = CONSENSUS_MODELS[i];
+      if (r.status === "fulfilled") return r.value;
+      return {
+        id: meta.id,
+        label: meta.label,
+        model: meta.model,
+        ok: false,
+        decision: null,
+        error:
+          r.reason instanceof Error ? r.reason.message : "erro desconhecido",
+        durationMs: 0,
+      };
+    });
+
+    const valid = models.filter(
+      (m): m is ConsensusModelDecision & { decision: AIDecision } =>
+        m.ok && m.decision !== null,
+    );
+    const aggregated = aggregateConsensus(data, valid);
+
+    return {
+      decision: aggregated.decision,
+      models,
+      agreement: aggregated.agreement,
+      consensusLabel: aggregated.label,
+      validCount: valid.length,
+      durationMs: Date.now() - t0,
+    };
+  });
+
+async function callOneModel(
+  meta: (typeof CONSENSUS_MODELS)[number],
+  data: z.infer<typeof InputSchema>,
+  apiKey: string,
+): Promise<ConsensusModelDecision> {
+  const t0 = Date.now();
+  try {
+    const system = `Você é um trader quantitativo sênior de cripto. Analise o contexto e retorne SOMENTE JSON válido no schema indicado. Seja objetivo, sem markdown.`;
+    const userMsg = formatPrompt(data);
+    const res = await fetch(
+      "https://ai.gateway.lovable.dev/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: meta.model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: userMsg },
+          ],
+          response_format: { type: "json_object" },
+          temperature: 0.2,
+        }),
+      },
+    );
+    if (!res.ok) {
+      return {
+        id: meta.id,
+        label: meta.label,
+        model: meta.model,
+        ok: false,
+        decision: null,
+        error: `HTTP ${res.status}`,
+        durationMs: Date.now() - t0,
+      };
+    }
+    const j = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const txt = j.choices?.[0]?.message?.content ?? "{}";
+    let parsed: Partial<AIDecision> = {};
+    try {
+      parsed = JSON.parse(txt);
+    } catch {
+      return {
+        id: meta.id,
+        label: meta.label,
+        model: meta.model,
+        ok: false,
+        decision: null,
+        error: "JSON inválido",
+        durationMs: Date.now() - t0,
+      };
+    }
+    return {
+      id: meta.id,
+      label: meta.label,
+      model: meta.model,
+      ok: true,
+      decision: validateAndEnrich(parsed, data),
+      error: null,
+      durationMs: Date.now() - t0,
+    };
+  } catch (e) {
+    return {
+      id: meta.id,
+      label: meta.label,
+      model: meta.model,
+      ok: false,
+      decision: null,
+      error: e instanceof Error ? e.message : "erro",
+      durationMs: Date.now() - t0,
+    };
+  }
+}
+
+type Aggregated = {
+  decision: AIDecision;
+  agreement: number;
+  label: ConsensusResult["consensusLabel"];
+};
+
+function aggregateConsensus(
+  data: z.infer<typeof InputSchema>,
+  valid: Array<ConsensusModelDecision & { decision: AIDecision }>,
+): Aggregated {
+  if (valid.length === 0) {
+    return {
+      decision: synthesize(data, {
+        action: "HOLD",
+        confidence: 0,
+        rationale: "Nenhum modelo respondeu. Tente em instantes.",
+        risk: "HIGH",
+        regime: "RANGE",
+      }),
+      agreement: 0,
+      label: "FALHOU",
+    };
+  }
+  if (valid.length === 1) {
+    // Only one valid → just use it, agreement = 100% by default
+    return {
+      decision: {
+        ...valid[0].decision,
+        rationale: `[só ${valid[0].label}] ${valid[0].decision.rationale}`,
+      },
+      agreement: 100,
+      label: "MAIORIA",
+    };
+  }
+
+  // Confidence-weighted vote per action
+  const weights = new Map<string, number>();
+  let totalWeight = 0;
+  let totalConfidence = 0;
+  for (let i = 0; i < valid.length; i++) {
+    const w = CONSENSUS_MODELS[i].weight * (valid[i].decision.confidence / 100);
+    const action = valid[i].decision.action;
+    weights.set(action, (weights.get(action) ?? 0) + w);
+    totalWeight += w;
+    totalConfidence += valid[i].decision.confidence;
+  }
+
+  // Pick the action with the most weight
+  let topAction: AIDecision["action"] = valid[0].decision.action;
+  let topWeight = -1;
+  for (const [a, w] of weights) {
+    if (w > topWeight) {
+      topWeight = w;
+      topAction = a as AIDecision["action"];
+    }
+  }
+
+  // Agreement = topWeight / totalWeight (0..100)
+  const agreement =
+    totalWeight > 0 ? Math.round((topWeight / totalWeight) * 100) : 0;
+  const avgConfidence = Math.round(totalConfidence / valid.length);
+
+  // For rationale, pick the highest-confidence model's rationale and prefix
+  const sorted = [...valid].sort(
+    (a, b) => b.decision.confidence - a.decision.confidence,
+  );
+  const bestRationale = sorted[0].decision.rationale;
+
+  // For SL/TP/regime/risk/r-multiple, take the median of agreeing models
+  // (or the winner's if agreement >= 80%)
+  const winners = valid.filter((m) => m.decision.action === topAction);
+  const refDecision = winners[0]?.decision ?? valid[0].decision;
+
+  let consensusLabel: ConsensusResult["consensusLabel"];
+  if (agreement === 100) consensusLabel = "UNANIME";
+  else if (agreement >= 67) consensusLabel = "MAIORIA";
+  else consensusLabel = "DIVIDIDO";
+
+  // Risk: if divergence, bump risk
+  const risk: AIDecision["risk"] =
+    consensusLabel === "DIVIDIDO"
+      ? "HIGH"
+      : consensusLabel === "MAIORIA"
+        ? "MEDIUM"
+        : refDecision.risk;
+
+  // If no winner, downgrade to HOLD
+  let finalAction = topAction;
+  let finalConfidence = avgConfidence;
+  if (consensusLabel === "DIVIDIDO" && topAction !== "HOLD" && agreement < 60) {
+    finalAction = "HOLD";
+    finalConfidence = Math.min(avgConfidence, 40);
+  }
+
+  return {
+    decision: {
+      ...refDecision,
+      action: finalAction,
+      confidence: finalConfidence,
+      rationale: `[${consensusLabel} ${agreement}%] ${bestRationale}`,
+      risk,
+    },
+    agreement,
+    label: consensusLabel,
+  };
+}

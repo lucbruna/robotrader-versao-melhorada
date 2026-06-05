@@ -306,6 +306,223 @@ REGRAS: 1) HOLD quando indicadores conflitam ou ADX<20. 2) SL sempre baseado em 
   }
 });
 
+// ---- #16 AI consensus — 3 models in parallel, aggregate by vote ----
+const CONSENSUS_MODELS = [
+  {
+    id: "gemini-flash",
+    model: "google/gemini-3-flash-preview",
+    weight: 1.0,
+    label: "Gemini Flash",
+  },
+  {
+    id: "gemini-pro",
+    model: "google/gemini-3-pro-preview",
+    weight: 1.4,
+    label: "Gemini Pro",
+  },
+  {
+    id: "llama-70b",
+    model: "meta-llama/llama-3.3-70b-instruct",
+    weight: 1.0,
+    label: "Llama 70B",
+  },
+];
+
+ipcMain.handle("ai:getConsensus", async (_event, input) => {
+  const t0 = Date.now();
+  const apiKey = process.env.LOVABLE_API_KEY;
+  if (!apiKey) {
+    const placeholder = synthesize(input, {
+      action: "HOLD",
+      confidence: 0,
+      rationale: "Consenso indisponível (LOVABLE_API_KEY não configurada).",
+      risk: "HIGH",
+      regime: "RANGE",
+    });
+    return {
+      decision: placeholder,
+      models: CONSENSUS_MODELS.map((m) => ({
+        id: m.id,
+        label: m.label,
+        model: m.model,
+        ok: false,
+        decision: null,
+        error: "LOVABLE_API_KEY ausente",
+        durationMs: 0,
+      })),
+      agreement: 0,
+      consensusLabel: "FALHOU",
+      validCount: 0,
+      durationMs: Date.now() - t0,
+    };
+  }
+
+  const userMsg = formatPrompt(input);
+  const system =
+    "Você é um trader quantitativo sênior de cripto. Analise o contexto e retorne SOMENTE JSON válido no schema indicado. Seja objetivo, sem markdown.";
+
+  const settled = await Promise.allSettled(
+    CONSENSUS_MODELS.map(async (m) => {
+      const mt0 = Date.now();
+      const res = await fetch(
+        "https://ai.gateway.lovable.dev/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: m.model,
+            messages: [
+              { role: "system", content: system },
+              { role: "user", content: userMsg },
+            ],
+            response_format: { type: "json_object" },
+            temperature: 0.2,
+          }),
+        },
+      );
+      if (!res.ok) {
+        return {
+          id: m.id,
+          label: m.label,
+          model: m.model,
+          ok: false,
+          decision: null,
+          error: `HTTP ${res.status}`,
+          durationMs: Date.now() - mt0,
+        };
+      }
+      const j = await res.json();
+      const txt = j.choices?.[0]?.message?.content ?? "{}";
+      let parsed;
+      try {
+        parsed = JSON.parse(txt);
+      } catch {
+        return {
+          id: m.id,
+          label: m.label,
+          model: m.model,
+          ok: false,
+          decision: null,
+          error: "JSON inválido",
+          durationMs: Date.now() - mt0,
+        };
+      }
+      return {
+        id: m.id,
+        label: m.label,
+        model: m.model,
+        ok: true,
+        decision: validate(parsed, input),
+        error: null,
+        durationMs: Date.now() - mt0,
+      };
+    }),
+  );
+
+  const models = settled.map((r, i) => {
+    const meta = CONSENSUS_MODELS[i];
+    if (r.status === "fulfilled") return r.value;
+    return {
+      id: meta.id,
+      label: meta.label,
+      model: meta.model,
+      ok: false,
+      decision: null,
+      error: r.reason instanceof Error ? r.reason.message : "erro",
+      durationMs: 0,
+    };
+  });
+
+  const valid = models.filter((m) => m.ok && m.decision);
+  let decision;
+  let agreement = 0;
+  let consensusLabel = "FALHOU";
+
+  if (valid.length === 0) {
+    decision = synthesize(input, {
+      action: "HOLD",
+      confidence: 0,
+      rationale: "Nenhum modelo respondeu.",
+      risk: "HIGH",
+      regime: "RANGE",
+    });
+  } else if (valid.length === 1) {
+    decision = {
+      ...valid[0].decision,
+      rationale: `[só ${valid[0].label}] ${valid[0].decision.rationale}`,
+    };
+    agreement = 100;
+    consensusLabel = "MAIORIA";
+  } else {
+    // Confidence-weighted vote
+    const weights = new Map();
+    let totalWeight = 0;
+    let totalConfidence = 0;
+    for (let i = 0; i < valid.length; i++) {
+      const w =
+        CONSENSUS_MODELS[i].weight * (valid[i].decision.confidence / 100);
+      const action = valid[i].decision.action;
+      weights.set(action, (weights.get(action) || 0) + w);
+      totalWeight += w;
+      totalConfidence += valid[i].decision.confidence;
+    }
+    let topAction = valid[0].decision.action;
+    let topWeight = -1;
+    for (const [a, w] of weights) {
+      if (w > topWeight) {
+        topWeight = w;
+        topAction = a;
+      }
+    }
+    agreement =
+      totalWeight > 0 ? Math.round((topWeight / totalWeight) * 100) : 0;
+    const avgConfidence = Math.round(totalConfidence / valid.length);
+    const sorted = [...valid].sort(
+      (a, b) => b.decision.confidence - a.decision.confidence,
+    );
+    const winners = valid.filter((m) => m.decision.action === topAction);
+    const ref = winners[0]?.decision || valid[0].decision;
+    if (agreement === 100) consensusLabel = "UNANIME";
+    else if (agreement >= 67) consensusLabel = "MAIORIA";
+    else consensusLabel = "DIVIDIDO";
+    const risk =
+      consensusLabel === "DIVIDIDO"
+        ? "HIGH"
+        : consensusLabel === "MAIORIA"
+          ? "MEDIUM"
+          : ref.risk;
+    let finalAction = topAction;
+    let finalConfidence = avgConfidence;
+    if (
+      consensusLabel === "DIVIDIDO" &&
+      topAction !== "HOLD" &&
+      agreement < 60
+    ) {
+      finalAction = "HOLD";
+      finalConfidence = Math.min(avgConfidence, 40);
+    }
+    decision = {
+      ...ref,
+      action: finalAction,
+      confidence: finalConfidence,
+      rationale: `[${consensusLabel} ${agreement}%] ${sorted[0].decision.rationale}`,
+      risk,
+    };
+  }
+
+  return {
+    decision,
+    models,
+    agreement,
+    consensusLabel,
+    validCount: valid.length,
+    durationMs: Date.now() - t0,
+  };
+});
+
 // ---- helpers (mirror of src/lib/ai-signal.functions.ts) ----
 function formatPrompt(d) {
   const fmt = (v, dp = 2) =>

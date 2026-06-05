@@ -4,7 +4,10 @@
 
 import {
   explainSignal,
+  getAIConsensus,
   getAISignal,
+  type ConsensusModelDecision,
+  type ConsensusResult,
   type ExplainInput,
   type ExplainResult,
 } from "@/lib/ai-signal.functions";
@@ -59,6 +62,7 @@ declare global {
       isElectron: boolean;
       platform: string;
       getAISignal: (data: unknown) => Promise<unknown>;
+      getAIConsensus?: (data: unknown) => Promise<unknown>;
       telegram?: {
         status: () => Promise<TelegramStatus>;
         send: (
@@ -107,6 +111,23 @@ export async function fetchExplanation(
   data: ExplainInput,
 ): Promise<ExplainResult> {
   return await explainSignal({ data });
+}
+
+// ---- AI consensus (#16) ----
+
+export type { ConsensusModelDecision, ConsensusResult };
+
+export async function fetchAIConsensus(
+  data: Parameters<typeof getAIConsensus>[0]["data"],
+): Promise<ConsensusResult> {
+  if (isElectron()) {
+    return (await window.electronAPI!.getAIConsensus?.(
+      data,
+    )) as ConsensusResult;
+  }
+  return await getAIConsensus({
+    data,
+  });
 }
 
 // ---- Telegram helpers (Electron-only — returns null in web) ----

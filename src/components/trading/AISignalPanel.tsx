@@ -19,15 +19,23 @@ import {
   MessageCircle,
   BookOpen,
   RefreshCw,
+  Users,
+  ChevronUp,
+  ChevronDown,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
 import { useServerFn } from "@tanstack/react-start";
 import { getAISignal, type AIDecision } from "@/lib/ai-signal.functions";
 import {
+  fetchAIConsensus,
   fetchAISignal,
   fetchExplanation,
   isElectron,
   telegramSendSignal,
   telegramStatus,
+  type ConsensusModelDecision,
+  type ConsensusResult,
 } from "@/lib/ai-client";
 import { useConfluence, useRegimeLive } from "@/lib/hooks/useSymbolContext";
 import {
@@ -72,6 +80,12 @@ export function AISignalPanel({
   // and RegimeDetector, but the data is small and short-lived.
   const { confluence } = useConfluence(symbol, snap, ticker);
   const regimeLive = useRegimeLive(snap);
+
+  // #16 — Mode toggle: "single" (default) = 1 model, "consensus" = 3 models
+  // in parallel aggregated by vote.
+  const [mode, setMode] = useState<"single" | "consensus">("single");
+  const [consensus, setConsensus] = useState<ConsensusResult | null>(null);
+  const [consensusExpanded, setConsensusExpanded] = useState(false);
 
   // #15 — Build the optional `confluence` + `regime` sub-payload for the
   // AI signal request. Aggregates the per-category scores into a flat dict
@@ -171,19 +185,26 @@ export function AISignalPanel({
         // #15 — Inject real confluence + regime from the dashboard
         ...buildContextPayload(),
       };
-      const d = isElectron()
-        ? await fetchAISignal(payload)
-        : await fetchAI({ data: payload });
-      setAI(d);
+      if (mode === "consensus") {
+        const r = await fetchAIConsensus(payload);
+        setConsensus(r);
+        setAI(r.decision);
+      } else {
+        const d = isElectron()
+          ? await fetchAISignal(payload)
+          : await fetchAI({ data: payload });
+        setAI(d);
+        setConsensus(null);
+      }
       setLastUpdate(Date.now());
       // auto-send to Telegram on trade-worthy signal
       if (
         tgAuto &&
         tgReady &&
-        d &&
-        (d.action === "BUY" || d.action === "SELL")
+        ai &&
+        (ai.action === "BUY" || ai.action === "SELL")
       ) {
-        void doSendTelegram(d);
+        void doSendTelegram(ai);
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Erro IA");
@@ -277,6 +298,7 @@ export function AISignalPanel({
   // auto-refresh every 60s on symbol/interval change
   useEffect(() => {
     setAI(null);
+    setConsensus(null);
     setErr(null);
     setExplanation(null);
     setExplainErr(null);
@@ -286,7 +308,7 @@ export function AISignalPanel({
     const id = setInterval(refresh, 60000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, interval]);
+  }, [symbol, interval, mode]);
 
   const ActionIcon =
     local.action === "BUY"
@@ -309,6 +331,31 @@ export function AISignalPanel({
           <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
             Sinais
           </span>
+          {/* #16 — Mode toggle */}
+          <div className="ml-1 flex items-center rounded border border-border bg-surface text-[10px]">
+            <button
+              onClick={() => setMode("single")}
+              className={`px-1.5 py-0.5 ${
+                mode === "single"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              title="IA única (1 modelo)"
+            >
+              IA
+            </button>
+            <button
+              onClick={() => setMode("consensus")}
+              className={`px-1.5 py-0.5 ${
+                mode === "consensus"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              title="Consenso de 3 modelos"
+            >
+              Consenso
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-1">
           {tgReady && ai && (
@@ -406,11 +453,50 @@ export function AISignalPanel({
           </ul>
         </div>
 
+        {/* #16 — Consensus breakdown (only in consensus mode) */}
+        {mode === "consensus" && consensus && (
+          <div className="rounded-md border border-border bg-surface p-2">
+            <button
+              onClick={() => setConsensusExpanded((v) => !v)}
+              className="flex w-full items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground"
+            >
+              <span className="flex items-center gap-1">
+                <Users className="size-3" /> 3 modelos ·{" "}
+                {consensus.consensusLabel} {consensus.agreement}%
+              </span>
+              <span className="flex items-center gap-1.5 text-[9px]">
+                {consensus.models.map((m) => (
+                  <span
+                    key={m.id}
+                    className={`flex size-2 rounded-full ${
+                      m.ok ? "bg-bull" : "bg-bear"
+                    }`}
+                    title={`${m.label}: ${m.ok ? "OK" : m.error}`}
+                  />
+                ))}
+                {consensusExpanded ? (
+                  <ChevronUp className="size-3" />
+                ) : (
+                  <ChevronDown className="size-3" />
+                )}
+              </span>
+            </button>
+            {consensusExpanded && (
+              <div className="mt-1.5 space-y-1">
+                {consensus.models.map((m) => (
+                  <ModelRow key={m.id} m={m} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* AI decision */}
         <div className="rounded-md border border-border bg-gradient-to-br from-surface to-surface-2 p-3 glow-primary">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-primary">
-              <Sparkles className="size-3" /> IA · Gemini
+              <Sparkles className="size-3" />{" "}
+              {mode === "consensus" ? "IA · Consenso" : "IA · Gemini"}
             </div>
             {ai && (
               <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] tabular text-foreground">
@@ -554,6 +640,43 @@ export function AISignalPanel({
             </>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ModelRow({ m }: { m: ConsensusModelDecision }) {
+  const tone =
+    m.decision?.action === "BUY"
+      ? "text-bull"
+      : m.decision?.action === "SELL"
+        ? "text-bear"
+        : "text-muted-foreground";
+  return (
+    <div className="flex items-center justify-between gap-2 rounded bg-background/50 px-2 py-1 text-[10px]">
+      <div className="flex items-center gap-1.5">
+        {m.ok ? (
+          <CheckCircle2 className="size-3 text-bull" />
+        ) : (
+          <XCircle className="size-3 text-bear" />
+        )}
+        <span className="font-medium text-foreground">{m.label}</span>
+        <span className="text-muted-foreground">·</span>
+        <span className="text-muted-foreground">{m.durationMs}ms</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        {m.ok && m.decision ? (
+          <>
+            <span className={`font-semibold ${tone}`}>{m.decision.action}</span>
+            <span className="tabular text-muted-foreground">
+              {m.decision.confidence}%
+            </span>
+          </>
+        ) : (
+          <span className="text-bear" title={m.error ?? ""}>
+            {m.error ?? "falhou"}
+          </span>
+        )}
       </div>
     </div>
   );
