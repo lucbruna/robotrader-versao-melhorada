@@ -33,6 +33,7 @@ import { BotPanel } from "@/components/trading/BotPanel";
 import { TelegramSettings } from "@/components/trading/TelegramSettings";
 import { UpdaterSettings } from "@/components/trading/UpdaterSettings";
 import { WSStatusBadge } from "@/components/trading/WSStatusBadge";
+import { FundingPanel } from "@/components/trading/FundingPanel";
 import {
   Dialog,
   DialogContent,
@@ -369,7 +370,7 @@ function Dashboard() {
       </div>
 
       {/* Main grid */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_280px_340px]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_280px_340px] xl:grid-cols-[1fr_280px_340px_320px]">
         {/* Chart + indicators */}
         <div className="flex min-h-0 flex-col border-r border-border">
           <div className="min-h-0 flex-1">
@@ -399,7 +400,7 @@ function Dashboard() {
         </div>
 
         {/* AI + Bot stacked */}
-        <div className="grid min-h-0 grid-rows-2 bg-sidebar">
+        <div className="grid min-h-0 grid-rows-2 border-r border-border bg-sidebar">
           <div className="min-h-0 border-b border-border">
             {snap && local && (
               <AISignalPanel
@@ -439,6 +440,11 @@ function Dashboard() {
               manualOrder={manualOrder}
             />
           </div>
+        </div>
+
+        {/* Futures panel (xl screens) */}
+        <div className="hidden min-h-0 border-border bg-sidebar xl:block">
+          <FundingPanel symbol={symbol} />
         </div>
       </div>
       {aiLoading && !ai && (

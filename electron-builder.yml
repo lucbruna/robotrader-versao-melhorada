@@ -76,8 +76,9 @@ linux:
   icon: build/icon.png
 publish:
   provider: github
-  owner: YOUR_GITHUB_USERNAME
+  owner: YOUR_GITHUB_USERNAME   # ← set in electron-builder.yml before release
   repo: robotrader-ai
   releaseType: release
   # Set GH_TOKEN env var before running `electron-builder --publish always`
   # to push releases to GitHub. Without token, builds are local-only.
+  # See RELEASE.md for the full process.
