@@ -1,0 +1,28 @@
+# Force LF line endings for all text files
+# Prevents prettier/prettier "Delete ␍" errors on Windows CI runners
+* text=auto eol=lf
+
+# Explicit overrides
+*.cjs    text eol=lf
+*.js     text eol=lf
+*.mjs    text eol=lf
+*.ts     text eol=lf
+*.tsx    text eol=lf
+*.jsx    text eol=lf
+*.json   text eol=lf
+*.md     text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.css    text eol=lf
+*.html   text eol=lf
+*.nsnsh  text eol=lf
+*.bat    text eol=lf
+*.sh     text eol=lf
+
+# Binary
+*.png    binary
+*.jpg    binary
+*.ico    binary
+*.exe    binary
+*.dll    binary
+*.pdf    binary
