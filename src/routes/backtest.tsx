@@ -20,6 +20,8 @@ import {
   CheckCircle2,
   XCircle,
   Dices,
+  Scale,
+  Minus,
 } from "lucide-react";
 import {
   Card,
@@ -45,6 +47,13 @@ import {
   type MonteCarloResult,
 } from "@/lib/monte-carlo";
 import { DEFAULT_RISK } from "@/lib/risk";
+import {
+  DEFAULT_SIZER,
+  recommendSize,
+  type PositionSizerConfig,
+  type ProposedTrade,
+  type SizerResult,
+} from "@/lib/position-sizer";
 
 export const Route = createFileRoute("/backtest")({
   component: BacktestPage,
@@ -85,6 +94,24 @@ function BacktestPage() {
   const [mcBlockSize, setMcBlockSize] = useState(1);
   const [mcRunning, setMcRunning] = useState(false);
   const [mcResult, setMcResult] = useState<MonteCarloResult | null>(null);
+
+  // Position sizer state
+  const [szEquity, setSzEquity] = useState(initialEquity);
+  const [szEntry, setSzEntry] = useState(100);
+  const [szStop, setSzStop] = useState(98);
+  const [szTarget, setSzTarget] = useState(104);
+  const [szSide, setSzSide] = useState<"BUY" | "SELL">("BUY");
+  const [szConfidence, setSzConfidence] = useState(60);
+  const [szConfluence, setSzConfluence] = useState(50);
+  const [szVolRegime, setSzVolRegime] = useState<
+    "LOW" | "NORMAL" | "HIGH" | "EXTREME"
+  >("NORMAL");
+  const [szBaseRisk, setSzBaseRisk] = useState(DEFAULT_SIZER.baseRiskPct);
+  const [szKelly, setSzKelly] = useState(DEFAULT_SIZER.kellyFraction);
+  const [szPortfolioCap, setSzPortfolioCap] = useState(
+    DEFAULT_SIZER.portfolioRiskPct,
+  );
+  const [szSizer, setSzSizer] = useState<SizerResult | null>(null);
 
   async function handleRun() {
     setRunning(true);
@@ -501,6 +528,194 @@ function BacktestPage() {
             </CardContent>
           </Card>
 
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Scale className="size-3.5 text-primary" /> Sizing Lab
+              </CardTitle>
+              <CardDescription>
+                Kelly · DD · convicção · volatilidade · cap de portfolio
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Entrada">
+                  <input
+                    type="number"
+                    step="any"
+                    value={szEntry}
+                    onChange={(e) => setSzEntry(Number(e.target.value) || 0)}
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+                <Field label="Stop">
+                  <input
+                    type="number"
+                    step="any"
+                    value={szStop}
+                    onChange={(e) => setSzStop(Number(e.target.value) || 0)}
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+                <Field label="Alvo">
+                  <input
+                    type="number"
+                    step="any"
+                    value={szTarget}
+                    onChange={(e) => setSzTarget(Number(e.target.value) || 0)}
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+                <Field label="Lado">
+                  <select
+                    value={szSide}
+                    onChange={(e) =>
+                      setSzSide(e.target.value as "BUY" | "SELL")
+                    }
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+                  >
+                    <option value="BUY">BUY</option>
+                    <option value="SELL">SELL</option>
+                  </select>
+                </Field>
+                <Field label="Equity (USDT)">
+                  <input
+                    type="number"
+                    min={100}
+                    step={100}
+                    value={szEquity}
+                    onChange={(e) =>
+                      setSzEquity(Math.max(100, Number(e.target.value) || 0))
+                    }
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+                <Field label="Regime vol.">
+                  <select
+                    value={szVolRegime}
+                    onChange={(e) =>
+                      setSzVolRegime(
+                        e.target.value as "LOW" | "NORMAL" | "HIGH" | "EXTREME",
+                      )
+                    }
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+                  >
+                    <option value="LOW">LOW</option>
+                    <option value="NORMAL">NORMAL</option>
+                    <option value="HIGH">HIGH</option>
+                    <option value="EXTREME">EXTREME</option>
+                  </select>
+                </Field>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label={`Confiança: ${szConfidence}`}>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={szConfidence}
+                    onChange={(e) => setSzConfidence(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </Field>
+                <Field label={`Confluence: ${szConfluence}`}>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={szConfluence}
+                    onChange={(e) => setSzConfluence(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </Field>
+                <Field label="Base risk %">
+                  <input
+                    type="number"
+                    step={0.1}
+                    min={0.1}
+                    max={5}
+                    value={szBaseRisk}
+                    onChange={(e) =>
+                      setSzBaseRisk(Math.max(0.1, Number(e.target.value) || 0))
+                    }
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+                <Field label="Kelly">
+                  <input
+                    type="number"
+                    step={0.05}
+                    min={0}
+                    max={1}
+                    value={szKelly}
+                    onChange={(e) =>
+                      setSzKelly(
+                        Math.max(0, Math.min(1, Number(e.target.value) || 0)),
+                      )
+                    }
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+                <Field label="Portfolio cap %">
+                  <input
+                    type="number"
+                    step={0.5}
+                    min={1}
+                    max={20}
+                    value={szPortfolioCap}
+                    onChange={(e) =>
+                      setSzPortfolioCap(
+                        Math.max(1, Number(e.target.value) || 0),
+                      )
+                    }
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+              </div>
+              <Button
+                onClick={() => {
+                  const proposed: ProposedTrade = {
+                    side: szSide,
+                    entry: szEntry,
+                    stop: szStop,
+                    target: szTarget,
+                  };
+                  const cfg: PositionSizerConfig = {
+                    ...DEFAULT_SIZER,
+                    baseRiskPct: szBaseRisk,
+                    kellyFraction: szKelly,
+                    portfolioRiskPct: szPortfolioCap,
+                  };
+                  const r = recommendSize(
+                    proposed,
+                    {
+                      equity: szEquity,
+                      peakEquity: szEquity, // no-DD assumption for lab
+                      signal: { action: szSide, confidence: szConfidence },
+                      confluenceScore: szConfluence,
+                      volRegime: szVolRegime,
+                      backtestStats: result
+                        ? {
+                            winRate: result.stats.winRate,
+                            avgWinUsd: result.stats.avgWinUsd,
+                            avgLossUsd: result.stats.avgLossUsd,
+                            profitFactor: result.stats.profitFactor,
+                          }
+                        : null,
+                    },
+                    cfg,
+                  );
+                  setSzSizer(r);
+                }}
+                variant="outline"
+                className="w-full"
+                size="default"
+              >
+                <Scale className="mr-1.5 size-3.5" /> Calcular Tamanho
+              </Button>
+            </CardContent>
+          </Card>
+
           {progress && (
             <div className="flex items-center gap-2 rounded-md border border-border bg-background p-2 text-[11px] text-muted-foreground">
               <Activity className="size-3 animate-pulse" /> {progress}
@@ -531,6 +746,7 @@ function BacktestPage() {
             />
           )}
           {mcResult && <MonteCarloView mc={mcResult} />}
+          {szSizer && <SizerView sizer={szSizer} symbol={symbol} />}
         </main>
       </div>
     </div>
@@ -1480,5 +1696,130 @@ function MonteCarloBands({
       {/* Median */}
       <path d={pathMed} fill="none" stroke="var(--primary)" strokeWidth="1.5" />
     </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sizer view
+// ---------------------------------------------------------------------------
+
+function SizerView({ sizer, symbol }: { sizer: SizerResult; symbol: string }) {
+  const compositeMult = sizer.factors.reduce((s, f) => s * f.mult, 1);
+  return (
+    <div className="mt-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Scale className="size-4 text-primary" />
+        <h2 className="text-sm font-semibold tracking-tight">Position Sizer</h2>
+        <span className="text-[10px] text-muted-foreground">
+          {symbol} · {sizer.factors.length} fatores
+        </span>
+      </div>
+
+      {sizer.stoppedByDD && (
+        <div className="flex items-start gap-2 rounded-md border border-bear/40 bg-bear/10 p-2 text-[11px] text-bear">
+          <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+          <div>
+            Bloqueado por drawdown excessivo — nenhum trade recomendado.
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        <StatCard
+          icon={sizer.qty > 0 ? TrendingUp : Minus}
+          label="Tamanho"
+          value={
+            sizer.qty < 0.001
+              ? "0"
+              : sizer.qty < 1
+                ? sizer.qty.toFixed(6)
+                : sizer.qty.toFixed(4)
+          }
+          sub={`${symbol}`}
+          tone="muted"
+        />
+        <StatCard
+          icon={DollarSign}
+          label="Notional"
+          value={`${sizer.qtyUsd.toFixed(0)} USDT`}
+          sub={`lev ${sizer.leverage.toFixed(2)}×`}
+          tone="muted"
+        />
+        <StatCard
+          icon={Target}
+          label="Risco USD"
+          value={`${sizer.riskUsd.toFixed(2)}`}
+          sub={`${sizer.riskPct.toFixed(2)}% do equity`}
+          tone={
+            sizer.riskPct <= 1.5
+              ? "bull"
+              : sizer.riskPct <= 2.5
+                ? "muted"
+                : "bear"
+          }
+        />
+        <StatCard
+          icon={BarChart3}
+          label="Mult. composto"
+          value={`${compositeMult.toFixed(2)}×`}
+          sub="base × todos os fatores"
+          tone={
+            compositeMult < 0.5
+              ? "bear"
+              : compositeMult > 1.2
+                ? "bull"
+                : "muted"
+          }
+        />
+      </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Breakdown</CardTitle>
+          <CardDescription>{sizer.rationale}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-1.5">
+            {sizer.factors.map((f, i) => {
+              const color =
+                f.mult === 0
+                  ? "bg-bear"
+                  : f.mult < 0.8
+                    ? "bg-bear/70"
+                    : f.mult < 1
+                      ? "bg-warn/70"
+                      : f.mult === 1
+                        ? "bg-muted-foreground"
+                        : f.mult > 1.2
+                          ? "bg-bull"
+                          : "bg-primary";
+              return (
+                <div key={i}>
+                  <div className="mb-0.5 flex items-center justify-between text-[10px]">
+                    <span className="font-medium text-foreground">
+                      {f.label}
+                    </span>
+                    <span className="tabular text-muted-foreground">
+                      {f.mult.toFixed(2)}×{" "}
+                      <span className="opacity-70">{f.detail}</span>
+                    </span>
+                  </div>
+                  <div className="relative h-1 overflow-hidden rounded-full bg-accent">
+                    <div
+                      className={`absolute inset-y-0 left-1/2 ${color}`}
+                      style={{
+                        width: `${Math.min(50, Math.abs(f.mult - 1) * 50)}%`,
+                        transform: f.mult < 1 ? "translateX(-100%)" : undefined,
+                      }}
+                    />
+                    <div className="absolute inset-y-0 left-1/2 w-px bg-foreground/30" />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
