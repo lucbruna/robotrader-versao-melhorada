@@ -1,0 +1,83 @@
+appId: com.robotrader.ai
+productName: RoboTrader AI
+copyright: Copyright (c) 2026 RoboTrader AI
+directories:
+  output: release
+  buildResources: build
+files:
+  - electron/**/*
+  - dist/**/*
+  - package.json
+  - "!**/.git"
+  - "!**/.vscode"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+  - "!**/node_modules/*.d.ts"
+  - "!**/node_modules/.bin"
+  - "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}"
+  - "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}"
+  - "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.nyc_output}"
+  - "!**/{appveyor.yml,.travis.yml,circle.yml}"
+  - "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
+asar: true
+asarUnpack:
+  - "node_modules/electron-updater/**/*"
+  - "node_modules/better-sqlite3/**/*"
+  - "node_modules/@esbuild/**/*"
+  - "node_modules/@cloudflare/workerd-*/**/*"
+compression: maximum
+artifactName: ${productName}-${version}-${arch}.${ext}
+extraMetadata:
+  main: electron/main.cjs
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: ${productName}-Setup-${version}-${arch}.${ext}
+  requestedExecutionLevel: asInvoker
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: RoboTrader AI
+  uninstallDisplayName: RoboTrader AI
+  deleteAppDataOnUninstall: false
+  runAfterFinish: false
+  installerLanguages:
+    - pt_BR
+    - en_US
+  include: build/installer.nsh
+portable:
+  artifactName: ${productName}-Portable-${version}-${arch}.${ext}
+  requestExecutionLevel: user
+  unpackDirName: RoboTraderAI
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  category: public.app-category.finance
+  icon: build/icon.icns
+linux:
+  target:
+    - target: AppImage
+    - target: deb
+  category: Finance
+  icon: build/icon.png
+publish:
+  provider: github
+  owner: YOUR_GITHUB_USERNAME
+  repo: robotrader-ai
+  releaseType: release
+  # Set GH_TOKEN env var before running `electron-builder --publish always`
+  # to push releases to GitHub. Without token, builds are local-only.
