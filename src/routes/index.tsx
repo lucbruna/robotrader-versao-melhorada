@@ -36,6 +36,7 @@ import { UpdaterSettings } from "@/components/trading/UpdaterSettings";
 import { WSStatusBadge } from "@/components/trading/WSStatusBadge";
 import { FundingPanel } from "@/components/trading/FundingPanel";
 import { ConfluenceGauge } from "@/components/trading/ConfluenceGauge";
+import { RegimeDetector } from "@/components/trading/RegimeDetector";
 import {
   Dialog,
   DialogContent,
@@ -408,10 +409,13 @@ function Dashboard() {
           <OrderBookPanel symbol={symbol} />
         </div>
 
-        {/* Confluence + AI + Bot stacked */}
-        <div className="grid min-h-0 grid-rows-[auto_1fr_1fr] border-r border-border bg-sidebar">
+        {/* Confluence + Regime + AI + Bot stacked */}
+        <div className="grid min-h-0 grid-rows-[auto_auto_1fr_1fr] border-r border-border bg-sidebar">
           <div className="min-h-0 border-b border-border">
             <ConfluenceGauge symbol={symbol} snap={snap} ticker={ticker} />
+          </div>
+          <div className="min-h-0 border-b border-border">
+            <RegimeDetector symbol={symbol} interval={interval} snap={snap} />
           </div>
           <div className="min-h-0 border-b border-border">
             {snap && local && (
