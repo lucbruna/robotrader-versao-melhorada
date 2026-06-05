@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { IndicatorSnapshot } from "@/lib/indicators";
 import {
   Activity,
@@ -22,7 +23,7 @@ function Stat({
   value: string;
   hint?: string;
   tone?: "bull" | "bear" | "warn" | "muted";
-  icon?: typeof Activity;
+  icon?: typeof Activity | ReactNode;
 }) {
   const toneClass =
     tone === "bull"
@@ -32,11 +33,26 @@ function Stat({
         : tone === "warn"
           ? "text-[color:var(--warning)]"
           : "text-foreground";
+  // Icon can be either a component type (e.g. Activity) — then we instantiate
+  // it — or a ready-made JSX element (e.g. <RegimeIcon />), in which case we
+  // just render it as-is. Discriminate by checking for the `type`+`props`
+  // shape that all React elements have.
+  const isComponentType =
+    Icon !== null &&
+    Icon !== undefined &&
+    typeof Icon !== "object" &&
+    typeof Icon !== "string" &&
+    typeof Icon !== "number";
+  const renderedIcon = !Icon
+    ? null
+    : isComponentType
+      ? (Icon as typeof Activity)({ className: "size-3" })
+      : (Icon as ReactNode);
   return (
     <div className="rounded-md border border-border bg-surface px-3 py-2">
       <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
         <span>{label}</span>
-        {Icon && <Icon className="size-3" />}
+        {renderedIcon}
       </div>
       <div className={`mt-0.5 text-sm font-semibold tabular ${toneClass}`}>
         {value}
@@ -242,11 +258,7 @@ export function IndicatorsPanel({ snap }: { snap: IndicatorSnapshot }) {
           label="Regime Vol."
           value={snap.volRegime}
           tone={volTone}
-          icon={
-            (
-              <RegimeIcon regime={snap.volRegime} />
-            ) as unknown as typeof Activity
-          }
+          icon={<RegimeIcon regime={snap.volRegime} />}
         />
         <Stat
           label="BB Width"
