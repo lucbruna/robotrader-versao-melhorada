@@ -7,6 +7,7 @@ import {
   Settings as SettingsIcon,
   FlaskConical,
   Crosshair,
+  BookText,
 } from "lucide-react";
 import {
   DEFAULT_SYMBOLS,
@@ -255,6 +256,13 @@ function Dashboard() {
             title="Scanner"
           >
             <Crosshair className="size-3.5" />
+          </Link>
+          <Link
+            to="/journal"
+            className="flex size-7 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
+            title="Journal"
+          >
+            <BookText className="size-3.5" />
           </Link>
           <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
             <DialogTrigger asChild>
