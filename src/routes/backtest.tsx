@@ -19,6 +19,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   XCircle,
+  Dices,
 } from "lucide-react";
 import {
   Card,
@@ -38,6 +39,11 @@ import {
   type BacktestTrade,
 } from "@/lib/backtest";
 import { runWalkForward, type WalkForwardResult } from "@/lib/walk-forward";
+import {
+  runMonteCarlo,
+  type MonteCarloConfig,
+  type MonteCarloResult,
+} from "@/lib/monte-carlo";
 import { DEFAULT_RISK } from "@/lib/risk";
 
 export const Route = createFileRoute("/backtest")({
@@ -73,6 +79,12 @@ function BacktestPage() {
   const [wfRunning, setWfRunning] = useState(false);
   const [wfResult, setWfResult] = useState<WalkForwardResult | null>(null);
   const [wfFoldsOpen, setWfFoldsOpen] = useState(false);
+
+  // Monte Carlo state
+  const [mcRuns, setMcRuns] = useState(1000);
+  const [mcBlockSize, setMcBlockSize] = useState(1);
+  const [mcRunning, setMcRunning] = useState(false);
+  const [mcResult, setMcResult] = useState<MonteCarloResult | null>(null);
 
   async function handleRun() {
     setRunning(true);
@@ -143,6 +155,32 @@ function BacktestPage() {
       setError(e instanceof Error ? e.message : "Erro desconhecido");
     } finally {
       setWfRunning(false);
+    }
+  }
+
+  async function handleMonteCarlo() {
+    if (!result || result.trades.length === 0) {
+      setError("Rode um backtest com pelo menos 1 trade para Monte Carlo.");
+      return;
+    }
+    setMcRunning(true);
+    setError(null);
+    setProgress(`Monte Carlo: ${mcRuns} runs…`);
+    try {
+      await new Promise((r) => setTimeout(r, 16));
+      const cfg: MonteCarloConfig = {
+        runs: mcRuns,
+        initialEquity: initialEquity,
+        blockSize: mcBlockSize,
+        ruinDrawdownPct: 50,
+      };
+      const r = runMonteCarlo(result.trades, cfg);
+      setMcResult(r);
+      setProgress("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erro desconhecido");
+    } finally {
+      setMcRunning(false);
     }
   }
 
@@ -400,6 +438,69 @@ function BacktestPage() {
             </CardContent>
           </Card>
 
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Dices className="size-3.5 text-primary" /> Monte Carlo
+              </CardTitle>
+              <CardDescription>
+                Bootstrap de trades · distribuição de cenários
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Runs">
+                  <input
+                    type="number"
+                    min={100}
+                    step={100}
+                    value={mcRuns}
+                    onChange={(e) =>
+                      setMcRuns(Math.max(100, Number(e.target.value) || 0))
+                    }
+                    disabled={mcRunning}
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+                <Field label="Block size">
+                  <input
+                    type="number"
+                    min={1}
+                    value={mcBlockSize}
+                    onChange={(e) =>
+                      setMcBlockSize(Math.max(1, Number(e.target.value) || 0))
+                    }
+                    disabled={mcRunning}
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+              </div>
+              <Button
+                onClick={handleMonteCarlo}
+                disabled={mcRunning || !result || result.trades.length === 0}
+                variant="outline"
+                className="w-full"
+                size="default"
+              >
+                {mcRunning ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />{" "}
+                    Simulando…
+                  </>
+                ) : (
+                  <>
+                    <Dices className="mr-1.5 size-3.5" /> Rodar Monte Carlo
+                  </>
+                )}
+              </Button>
+              {(!result || result.trades.length === 0) && (
+                <div className="text-[10px] text-muted-foreground">
+                  Requer backtest com pelo menos 1 trade.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {progress && (
             <div className="flex items-center gap-2 rounded-md border border-border bg-background p-2 text-[11px] text-muted-foreground">
               <Activity className="size-3 animate-pulse" /> {progress}
@@ -429,6 +530,7 @@ function BacktestPage() {
               setFoldsOpen={setWfFoldsOpen}
             />
           )}
+          {mcResult && <MonteCarloView mc={mcResult} />}
         </main>
       </div>
     </div>
@@ -1131,5 +1233,252 @@ function FoldsTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Monte Carlo view
+// ---------------------------------------------------------------------------
+
+function MonteCarloView({ mc }: { mc: MonteCarloResult }) {
+  const p = mc.percentiles;
+  const ruinWarning = mc.probRuin > 0.05;
+  const lowProbProfit = mc.probProfit < 0.6;
+
+  return (
+    <div className="mt-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Dices className="size-4 text-primary" />
+        <h2 className="text-sm font-semibold tracking-tight">Monte Carlo</h2>
+        <span className="text-[10px] text-muted-foreground">
+          {mc.config.runs} runs · {mc.sourceTrades} trades · block{" "}
+          {mc.config.blockSize ?? 1} · {(mc.durationMs / 1000).toFixed(1)}s
+        </span>
+      </div>
+
+      {(ruinWarning || lowProbProfit) && (
+        <div className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 p-2 text-[11px] text-warn">
+          <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+          <div>
+            <div className="font-medium">Cenários adversos detectados</div>
+            <div className="text-warn/80">
+              {lowProbProfit
+                ? `Probabilidade de lucro: ${(mc.probProfit * 100).toFixed(0)}% (recomendado ≥ 70%). `
+                : ""}
+              {ruinWarning
+                ? `Probabilidade de ruína (DD ≥ 50%): ${(mc.probRuin * 100).toFixed(1)}%.`
+                : ""}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        <StatCard
+          icon={mc.probProfit >= 0.7 ? CheckCircle2 : XCircle}
+          label="Prob. Lucro"
+          value={`${(mc.probProfit * 100).toFixed(1)}%`}
+          sub={`${(mc.probProfit * mc.config.runs) | 0} / ${mc.config.runs} runs`}
+          tone={
+            mc.probProfit >= 0.7
+              ? "bull"
+              : mc.probProfit < 0.5
+                ? "bear"
+                : "muted"
+          }
+        />
+        <StatCard
+          icon={p.pnlUsd.p50 >= 0 ? TrendingUp : TrendingDown}
+          label="P&L Mediano"
+          value={`${p.pnlUsd.p50 >= 0 ? "+" : ""}${p.pnlUsd.p50.toFixed(0)} USDT`}
+          sub={`p5 ${p.pnlUsd.p5.toFixed(0)} · p95 ${p.pnlUsd.p95.toFixed(0)}`}
+          tone={p.pnlUsd.p50 >= 0 ? "bull" : "bear"}
+        />
+        <StatCard
+          icon={TrendingDown}
+          label="DD Pior Caso"
+          value={`-${p.maxDdPct.p95.toFixed(2)}%`}
+          sub={`mediano -${p.maxDdPct.p50.toFixed(2)}% · p5 -${p.maxDdPct.p5.toFixed(2)}%`}
+          tone="bear"
+        />
+        <StatCard
+          icon={Activity}
+          label="Sharpe Mediano"
+          value={p.sharpe.p50.toFixed(2)}
+          sub={`p5 ${p.sharpe.p5.toFixed(2)} · p95 ${p.sharpe.p95.toFixed(2)}`}
+          tone={
+            p.sharpe.p50 >= 1 ? "bull" : p.sharpe.p50 < 0 ? "bear" : "muted"
+          }
+        />
+        <StatCard
+          icon={AlertTriangle}
+          label="Prob. Ruína"
+          value={`${(mc.probRuin * 100).toFixed(1)}%`}
+          sub={`DD ≥ ${mc.config.ruinDrawdownPct ?? 50}%`}
+          tone={mc.probRuin > 0.05 ? "bear" : "muted"}
+        />
+        <StatCard
+          icon={BarChart3}
+          label="P&L Esperado"
+          value={`${mc.expectedPnl >= 0 ? "+" : ""}${mc.expectedPnl.toFixed(0)} USDT`}
+          sub={`${mc.expectedPnlPct >= 0 ? "+" : ""}${mc.expectedPnlPct.toFixed(2)}%`}
+          tone={mc.expectedPnl >= 0 ? "bull" : "bear"}
+        />
+        <StatCard
+          icon={Percent}
+          label="P&L Pior (5%)"
+          value={`${p.pnlPct.p5 >= 0 ? "+" : ""}${p.pnlPct.p5.toFixed(2)}%`}
+          sub="5th percentil"
+          tone={p.pnlPct.p5 >= 0 ? "bull" : "bear"}
+        />
+        <StatCard
+          icon={Percent}
+          label="P&L Melhor (5%)"
+          value={`+${p.pnlPct.p95.toFixed(2)}%`}
+          sub="95th percentil"
+          tone="bull"
+        />
+      </div>
+
+      {mc.bands.p50.length > 1 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">
+              Bandas de Confiança (5% / 50% / 95%)
+            </CardTitle>
+            <CardDescription>
+              {mc.config.runs} paths sintéticos · envelope por trade
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <MonteCarloBands
+              bands={mc.bands}
+              initial={mc.config.initialEquity}
+            />
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function MonteCarloBands({
+  bands,
+  initial,
+}: {
+  bands: { p5: number[]; p50: number[]; p95: number[] };
+  initial: number;
+}) {
+  if (bands.p50.length < 2) {
+    return (
+      <div className="flex h-40 items-center justify-center text-xs text-muted-foreground">
+        Sem dados
+      </div>
+    );
+  }
+  const w = 800;
+  const h = 200;
+  const padL = 56;
+  const padR = 12;
+  const padT = 12;
+  const padB = 24;
+  const len = bands.p50.length;
+  const flat = [...bands.p5, ...bands.p50, ...bands.p95, initial];
+  const minE = Math.min(...flat);
+  const maxE = Math.max(...flat);
+  const rangeE = maxE - minE || 1;
+  const x = (i: number) => padL + (i / (len - 1)) * (w - padL - padR);
+  const y = (e: number) => padT + (1 - (e - minE) / rangeE) * (h - padT - padB);
+
+  const pathLow = bands.p5
+    .map(
+      (e, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(e).toFixed(2)}`,
+    )
+    .join(" ");
+  const pathHigh = bands.p95
+    .map(
+      (e, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(e).toFixed(2)}`,
+    )
+    .join(" ");
+  const pathMed = bands.p50
+    .map(
+      (e, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(2)} ${y(e).toFixed(2)}`,
+    )
+    .join(" ");
+
+  // Fill area: p5 forward, p95 backward
+  const fillD = `${pathLow} ${bands.p95
+    .map((e, i) => `L ${x(len - 1 - i).toFixed(2)} ${y(e).toFixed(2)}`)
+    .join(" ")} Z`;
+
+  const initialY = y(initial);
+
+  const gridYs = [0, 0.25, 0.5, 0.75, 1].map(
+    (f) => padT + f * (h - padT - padB),
+  );
+  const gridLabels = gridYs.map((gy) => {
+    const e = maxE - ((gy - padT) / (h - padT - padB)) * rangeE;
+    return { gy, label: e.toFixed(0) };
+  });
+
+  return (
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      className="h-48 w-full"
+      preserveAspectRatio="none"
+    >
+      {gridYs.map((gy, i) => (
+        <line
+          key={i}
+          x1={padL}
+          y1={gy}
+          x2={w - padR}
+          y2={gy}
+          stroke="var(--border)"
+          strokeWidth="0.5"
+          strokeDasharray="2 4"
+          opacity="0.5"
+        />
+      ))}
+      {gridLabels.map(({ gy, label }, i) => (
+        <text
+          key={i}
+          x={padL - 4}
+          y={gy + 3}
+          textAnchor="end"
+          style={{ fontSize: 9, fill: "var(--muted-foreground)" }}
+        >
+          {label}
+        </text>
+      ))}
+      <line
+        x1={padL}
+        y1={initialY}
+        x2={w - padR}
+        y2={initialY}
+        stroke="var(--muted-foreground)"
+        strokeWidth="0.5"
+        strokeDasharray="4 2"
+        opacity="0.6"
+      />
+      {/* 5-95 envelope */}
+      <path d={fillD} fill="var(--primary)" opacity="0.15" />
+      <path
+        d={pathHigh}
+        fill="none"
+        stroke="var(--primary)"
+        strokeWidth="0.5"
+        opacity="0.4"
+      />
+      <path
+        d={pathLow}
+        fill="none"
+        stroke="var(--primary)"
+        strokeWidth="0.5"
+        opacity="0.4"
+      />
+      {/* Median */}
+      <path d={pathMed} fill="none" stroke="var(--primary)" strokeWidth="1.5" />
+    </svg>
   );
 }
