@@ -1,11 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import type { Candle } from "@/lib/indicators";
 import {
   Activity,
   ArrowLeft,
   ChevronDown,
   ChevronUp,
   FlaskConical,
+  Repeat,
   Loader2,
   Play,
   TrendingUp,
@@ -35,6 +37,7 @@ import {
   type BacktestResult,
   type BacktestTrade,
 } from "@/lib/backtest";
+import { runWalkForward, type WalkForwardResult } from "@/lib/walk-forward";
 import { DEFAULT_RISK } from "@/lib/risk";
 
 export const Route = createFileRoute("/backtest")({
@@ -61,25 +64,35 @@ function BacktestPage() {
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [progress, setProgress] = useState<string>("");
   const [tradesOpen, setTradesOpen] = useState(false);
+  const [candles, setCandles] = useState<Candle[] | null>(null);
+
+  // Walk-forward state
+  const [wfTrainDays, setWfTrainDays] = useState(60);
+  const [wfTestDays, setWfTestDays] = useState(20);
+  const [wfStepDays, setWfStepDays] = useState(20);
+  const [wfRunning, setWfRunning] = useState(false);
+  const [wfResult, setWfResult] = useState<WalkForwardResult | null>(null);
+  const [wfFoldsOpen, setWfFoldsOpen] = useState(false);
 
   async function handleRun() {
     setRunning(true);
     setError(null);
     setResult(null);
+    setWfResult(null);
     setProgress("Buscando candles…");
     try {
-      const candles = await fetchBacktestData(symbol, interval, days);
-      if (candles.length < 60) {
+      const c = await fetchBacktestData(symbol, interval, days);
+      if (c.length < 60) {
         throw new Error(
-          `Apenas ${candles.length} candles recebidos — escolha mais dias.`,
+          `Apenas ${c.length} candles recebidos — escolha mais dias.`,
         );
       }
-      setProgress(`Calculando ${candles.length} candles…`);
+      setProgress(`Calculando ${c.length} candles…`);
       // Defer to next tick so the progress label can render before the
       // synchronous engine blocks the main thread.
       await new Promise((r) => setTimeout(r, 16));
       const r = runBacktest(
-        candles,
+        c,
         {
           ...DEFAULT_RISK,
           initialEquity,
@@ -89,11 +102,47 @@ function BacktestPage() {
         { symbol, interval },
       );
       setResult(r);
+      setCandles(c);
       setProgress("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro desconhecido");
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function handleWalkForward() {
+    if (!candles) {
+      setError("Rode primeiro um backtest para obter os candles.");
+      return;
+    }
+    setWfRunning(true);
+    setError(null);
+    setProgress("Walk-forward: rolando janelas…");
+    try {
+      await new Promise((r) => setTimeout(r, 16));
+      const r = runWalkForward(
+        candles,
+        {
+          ...DEFAULT_RISK,
+          initialEquity,
+          minScore,
+          minConfidence,
+        },
+        {
+          totalDays: days,
+          trainDays: wfTrainDays,
+          testDays: wfTestDays,
+          stepDays: wfStepDays,
+        },
+        { symbol, interval },
+      );
+      setWfResult(r);
+      setProgress("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erro desconhecido");
+    } finally {
+      setWfRunning(false);
     }
   }
 
@@ -279,6 +328,78 @@ function BacktestPage() {
             )}
           </Button>
 
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Repeat className="size-3.5 text-primary" /> Walk-Forward
+              </CardTitle>
+              <CardDescription>Janelas rolantes · OOS agregado</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <Field label="Train (d)">
+                  <input
+                    type="number"
+                    min={10}
+                    value={wfTrainDays}
+                    onChange={(e) =>
+                      setWfTrainDays(Math.max(10, Number(e.target.value) || 0))
+                    }
+                    disabled={wfRunning}
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+                <Field label="Test (d)">
+                  <input
+                    type="number"
+                    min={5}
+                    value={wfTestDays}
+                    onChange={(e) =>
+                      setWfTestDays(Math.max(5, Number(e.target.value) || 0))
+                    }
+                    disabled={wfRunning}
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+                <Field label="Step (d)">
+                  <input
+                    type="number"
+                    min={1}
+                    value={wfStepDays}
+                    onChange={(e) =>
+                      setWfStepDays(Math.max(1, Number(e.target.value) || 0))
+                    }
+                    disabled={wfRunning}
+                    className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm tabular"
+                  />
+                </Field>
+              </div>
+              <Button
+                onClick={handleWalkForward}
+                disabled={wfRunning || !candles}
+                variant="outline"
+                className="w-full"
+                size="default"
+              >
+                {wfRunning ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />{" "}
+                    Calculando…
+                  </>
+                ) : (
+                  <>
+                    <Repeat className="mr-1.5 size-3.5" /> Rodar Walk-Forward
+                  </>
+                )}
+              </Button>
+              {!candles && (
+                <div className="text-[10px] text-muted-foreground">
+                  Rode um backtest primeiro para popular os candles.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {progress && (
             <div className="flex items-center gap-2 rounded-md border border-border bg-background p-2 text-[11px] text-muted-foreground">
               <Activity className="size-3 animate-pulse" /> {progress}
@@ -299,6 +420,13 @@ function BacktestPage() {
               result={result}
               tradesOpen={tradesOpen}
               setTradesOpen={setTradesOpen}
+            />
+          )}
+          {wfResult && (
+            <WalkForwardView
+              wf={wfResult}
+              foldsOpen={wfFoldsOpen}
+              setFoldsOpen={setWfFoldsOpen}
             />
           )}
         </main>
@@ -729,4 +857,279 @@ function formatDuration(ms: number): string {
   if (h < 24) return `${h}h`;
   const d = Math.floor(h / 24);
   return `${d}d`;
+}
+
+// ---------------------------------------------------------------------------
+// Walk-Forward view
+// ---------------------------------------------------------------------------
+
+function WalkForwardView({
+  wf,
+  foldsOpen,
+  setFoldsOpen,
+}: {
+  wf: WalkForwardResult;
+  foldsOpen: boolean;
+  setFoldsOpen: (v: boolean) => void;
+}) {
+  const a = wf.aggregates;
+  const overfitRatio = a.isVsOosRatio;
+  const overfitWarning =
+    overfitRatio > 2 || (a.consistency < 0.4 && a.totalFolds >= 3);
+
+  return (
+    <div className="mt-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Repeat className="size-4 text-primary" />
+        <h2 className="text-sm font-semibold tracking-tight">Walk-Forward</h2>
+        <span className="text-[10px] text-muted-foreground">
+          {wf.config.trainDays}d train · {wf.config.testDays}d test · step{" "}
+          {wf.config.stepDays ?? wf.config.testDays}d
+        </span>
+      </div>
+
+      {overfitWarning && (
+        <div className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 p-2 text-[11px] text-warn">
+          <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+          <div>
+            <div className="font-medium">Possível overfitting detectado</div>
+            <div className="text-warn/80">
+              {a.consistency < 0.4
+                ? `Apenas ${(a.consistency * 100).toFixed(0)}% das janelas OOS foram lucrativas. `
+                : ""}
+              {overfitRatio > 2
+                ? `P&L in-sample é ${overfitRatio.toFixed(1)}× o OOS — degradação significativa. `
+                : ""}
+              Considere revisar regras ou aumentar o universo de símbolos.
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        <StatCard
+          icon={CheckCircle2}
+          label="Consistência"
+          value={`${(a.consistency * 100).toFixed(0)}%`}
+          sub={`${a.profitableFolds}/${a.totalFolds} janelas OOS lucrativas`}
+          tone={
+            a.consistency >= 0.6
+              ? "bull"
+              : a.consistency < 0.4
+                ? "bear"
+                : "muted"
+          }
+        />
+        <StatCard
+          icon={a.totalOosPnlUsd >= 0 ? TrendingUp : TrendingDown}
+          label="P&L OOS total"
+          value={`${a.totalOosPnlUsd >= 0 ? "+" : ""}${a.totalOosPnlUsd.toFixed(0)} USDT`}
+          sub={`${a.totalOosPnlPct >= 0 ? "+" : ""}${a.totalOosPnlPct.toFixed(2)}% · ${a.totalOosTrades} trades`}
+          tone={a.totalOosPnlUsd >= 0 ? "bull" : "bear"}
+        />
+        <StatCard
+          icon={BarChart3}
+          label="PF médio OOS"
+          value={
+            isFinite(a.avgOosProfitFactor)
+              ? a.avgOosProfitFactor.toFixed(2)
+              : "∞"
+          }
+          sub={`win rate médio ${(a.avgOosWinRate * 100).toFixed(1)}%`}
+          tone={
+            a.avgOosProfitFactor >= 1.2
+              ? "bull"
+              : a.avgOosProfitFactor < 1
+                ? "bear"
+                : "muted"
+          }
+        />
+        <StatCard
+          icon={Activity}
+          label="Sharpe médio OOS"
+          value={a.avgOosSharpe.toFixed(2)}
+          sub={`Pior DD: -${a.worstOosMaxDdPct.toFixed(2)}%`}
+          tone={
+            a.avgOosSharpe >= 1 ? "bull" : a.avgOosSharpe < 0 ? "bear" : "muted"
+          }
+        />
+        <StatCard
+          icon={Target}
+          label="P&L médio / fold"
+          value={`${a.avgOosPnlUsd >= 0 ? "+" : ""}${a.avgOosPnlUsd.toFixed(0)} USDT`}
+          sub="out-of-sample"
+          tone={a.avgOosPnlUsd >= 0 ? "bull" : "bear"}
+        />
+        <StatCard
+          icon={TrendingDown}
+          label="DD combinado OOS"
+          value={`-${a.stitchedStats.maxDrawdownPct.toFixed(2)}%`}
+          sub={`-${a.stitchedStats.maxDrawdownUsd.toFixed(0)} USDT`}
+          tone="bear"
+        />
+        <StatCard
+          icon={a.isVsOosRatio > 2 ? AlertTriangle : CheckCircle2}
+          label="IS / OOS"
+          value={`${a.isVsOosRatio.toFixed(2)}×`}
+          sub={a.isVsOosRatio > 2 ? "overfitting" : "saudável"}
+          tone={
+            a.isVsOosRatio > 2
+              ? "bear"
+              : a.isVsOosRatio > 1.5
+                ? "muted"
+                : "bull"
+          }
+        />
+        <StatCard
+          icon={Loader2}
+          label="Tempo"
+          value={`${(wf.durationMs / 1000).toFixed(1)}s`}
+          sub={`${a.totalFolds} folds processados`}
+          tone="muted"
+        />
+      </div>
+
+      {/* Stitched OOS equity */}
+      {a.stitchedOos.length > 1 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Equity OOS Costurada</CardTitle>
+            <CardDescription>
+              Janelas OOS encadeadas — performance fora-da-amostra
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <EquityCurve
+              points={a.stitchedOos}
+              initial={wf.backtest.initialEquity}
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Per-fold table */}
+      <Card>
+        <CardHeader className="pb-2">
+          <button
+            onClick={() => setFoldsOpen(!foldsOpen)}
+            className="flex w-full items-center justify-between text-left"
+          >
+            <div>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                Folds ({wf.folds.length})
+                {foldsOpen ? (
+                  <ChevronUp className="size-3.5" />
+                ) : (
+                  <ChevronDown className="size-3.5" />
+                )}
+              </CardTitle>
+              <CardDescription>
+                In-sample vs out-of-sample por janela
+              </CardDescription>
+            </div>
+          </button>
+        </CardHeader>
+        {foldsOpen && (
+          <CardContent className="p-0">
+            <FoldsTable folds={wf.folds} />
+          </CardContent>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function FoldsTable({
+  folds,
+}: {
+  folds: import("@/lib/walk-forward").WalkForwardFold[];
+}) {
+  return (
+    <div className="max-h-80 overflow-y-auto scrollbar-thin">
+      <table className="w-full text-[11px]">
+        <thead className="sticky top-0 bg-sidebar text-[10px] uppercase tracking-wider text-muted-foreground">
+          <tr>
+            <th className="px-2 py-1.5 text-left">#</th>
+            <th className="px-2 py-1.5 text-left">Período OOS</th>
+            <th className="px-2 py-1.5 text-right">Bars</th>
+            <th className="px-2 py-1.5 text-right">IS P&L%</th>
+            <th className="px-2 py-1.5 text-right">OOS P&L%</th>
+            <th className="px-2 py-1.5 text-right">OOS WR</th>
+            <th className="px-2 py-1.5 text-right">OOS PF</th>
+            <th className="px-2 py-1.5 text-right">OOS DD%</th>
+            <th className="px-2 py-1.5 text-right">OOS Trades</th>
+            <th className="px-2 py-1.5 text-center">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {folds.map((f) => {
+            const oos = f.outOfSample;
+            const is = f.inSample;
+            const isWin = oos.netPnlUsd > 0;
+            const ratio =
+              is.netPnlPct !== 0 ? Math.abs(oos.netPnlPct / is.netPnlPct) : 0;
+            return (
+              <tr
+                key={f.index}
+                className="border-t border-border/40 hover:bg-accent/30"
+              >
+                <td className="px-2 py-1 text-muted-foreground tabular">
+                  {f.index + 1}
+                </td>
+                <td className="px-2 py-1 text-muted-foreground">
+                  {new Date(f.testStart * 1000).toLocaleDateString("pt-BR", {
+                    day: "2-digit",
+                    month: "2-digit",
+                  })}{" "}
+                  →{" "}
+                  {new Date(f.testEnd * 1000).toLocaleDateString("pt-BR", {
+                    day: "2-digit",
+                    month: "2-digit",
+                  })}
+                </td>
+                <td className="px-2 py-1 text-right tabular text-muted-foreground">
+                  {f.bars.test}
+                </td>
+                <td
+                  className={`px-2 py-1 text-right tabular ${is.netPnlPct >= 0 ? "text-bull" : "text-bear"}`}
+                >
+                  {is.netPnlPct >= 0 ? "+" : ""}
+                  {is.netPnlPct.toFixed(2)}%
+                </td>
+                <td
+                  className={`px-2 py-1 text-right tabular font-medium ${isWin ? "text-bull" : "text-bear"}`}
+                >
+                  {oos.netPnlPct >= 0 ? "+" : ""}
+                  {oos.netPnlPct.toFixed(2)}%
+                </td>
+                <td className="px-2 py-1 text-right tabular">
+                  {(oos.winRate * 100).toFixed(0)}%
+                </td>
+                <td className="px-2 py-1 text-right tabular">
+                  {isFinite(oos.profitFactor)
+                    ? oos.profitFactor.toFixed(2)
+                    : "∞"}
+                </td>
+                <td className="px-2 py-1 text-right tabular text-bear">
+                  -{oos.maxDrawdownPct.toFixed(2)}%
+                </td>
+                <td className="px-2 py-1 text-right tabular text-muted-foreground">
+                  {oos.totalTrades}
+                </td>
+                <td className="px-2 py-1 text-center">
+                  <Badge
+                    className={
+                      isWin ? "bg-bull/20 text-bull" : "bg-bear/20 text-bear"
+                    }
+                  >
+                    {isWin ? "OK" : "FAIL"}
+                  </Badge>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
