@@ -276,7 +276,7 @@ function ScannerPage() {
                 </thead>
                 <tbody>
                   {filtered.map((r, i) => {
-                    const RegimeIcon = REGIME_ICON[r.regime];
+                    const RegimeIcon = REGIME_ICON[r.regime] ?? Minus;
                     return (
                       <tr
                         key={r.symbol}

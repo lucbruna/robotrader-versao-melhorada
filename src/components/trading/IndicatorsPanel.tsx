@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { ComponentType } from "react";
 import type { IndicatorSnapshot } from "@/lib/indicators";
 import {
   Activity,
@@ -33,21 +34,30 @@ function Stat({
         : tone === "warn"
           ? "text-[color:var(--warning)]"
           : "text-foreground";
-  // Icon can be either a component type (e.g. Activity) — then we instantiate
-  // it — or a ready-made JSX element (e.g. <RegimeIcon />), in which case we
-  // just render it as-is. Discriminate by checking for the `type`+`props`
-  // shape that all React elements have.
-  const isComponentType =
-    Icon !== null &&
-    Icon !== undefined &&
-    typeof Icon !== "object" &&
-    typeof Icon !== "string" &&
-    typeof Icon !== "number";
-  const renderedIcon = !Icon
-    ? null
-    : isComponentType
-      ? (Icon as typeof Activity)({ className: "size-3" })
-      : (Icon as ReactNode);
+  // Icon can be either a component type (function OR forwardRef object with
+  // $$typeof+render — that's what lucide icons are) — then we instantiate
+  // it via JSX — or a ready-made JSX element (e.g. <RegimeIcon />), in which
+  // case we just render it as-is. Discriminate by shape: a React element has
+  // `type`+`props`; a component type has `$$typeof` or is a function. NB:
+  // forwardRef components must be rendered via JSX (<X />), not called as
+  // functions — that's the bug that produced "Icon is not a function".
+  const isComponentType = (
+    v: unknown,
+  ): v is ComponentType<{ className?: string }> => {
+    if (typeof v === "function") return true;
+    if (typeof v !== "object" || v === null) return false;
+    return "$$typeof" in (v as object);
+  };
+  const isElement = (v: unknown): v is ReactNode =>
+    typeof v === "object" &&
+    v !== null &&
+    "type" in (v as object) &&
+    "props" in (v as object);
+  const renderedIcon: ReactNode = !Icon ? null : isElement(Icon) ? (
+    Icon
+  ) : isComponentType(Icon) ? (
+    <Icon className="size-3" />
+  ) : null;
   return (
     <div className="rounded-md border border-border bg-surface px-3 py-2">
       <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
