@@ -29,6 +29,12 @@ import {
   telegramSendSignal,
   telegramStatus,
 } from "@/lib/ai-client";
+import { useConfluence, useRegimeLive } from "@/lib/hooks/useSymbolContext";
+import {
+  CONFLUENCE_CATEGORIES,
+  categoryLabel,
+  categoryScore,
+} from "@/lib/confluence";
 import type { IndicatorSnapshot, LocalSignal } from "@/lib/indicators";
 import type { Ticker24h } from "@/lib/binance";
 
@@ -61,6 +67,67 @@ export function AISignalPanel({
   const [explaining, setExplaining] = useState(false);
   const [explainErr, setExplainErr] = useState<string | null>(null);
   const [explainCacheKey, setExplainCacheKey] = useState<string | null>(null);
+  // #15 — Real confluence + regime from the live dashboard, used in the
+  // LLM prompt and the explainer. Duplicates fetches done by ConfluenceGauge
+  // and RegimeDetector, but the data is small and short-lived.
+  const { confluence } = useConfluence(symbol, snap, ticker);
+  const regimeLive = useRegimeLive(snap);
+
+  // #15 — Build the optional `confluence` + `regime` sub-payload for the
+  // AI signal request. Aggregates the per-category scores into a flat dict
+  // so the prompt can show e.g. "trend=82 | momentum=45 | ...".
+  const buildContextPayload = () => {
+    if (!confluence && !regimeLive) return {};
+    const out: {
+      confluence?: {
+        score: number;
+        tone: "bullish" | "bearish" | "neutral";
+        confidence: number;
+        topBullish: string[];
+        topBearish: string[];
+        categoryScores?: Record<string, number>;
+      };
+      regime?: {
+        regime: "BULL_TREND" | "BEAR_TREND" | "RANGE" | "VOLATILE";
+        confidence: {
+          overall: number;
+          trend: number;
+          structure: number;
+          momentum: number;
+          volatility: number;
+        };
+        barsInRegime: number;
+      };
+    } = {};
+    if (confluence) {
+      const cats: Record<string, number> = {};
+      for (const c of CONFLUENCE_CATEGORIES) {
+        cats[categoryLabel(c)] = Math.round(categoryScore(confluence, c));
+      }
+      out.confluence = {
+        score: Math.round(confluence.score),
+        tone: confluence.tone,
+        confidence: Math.round(confluence.confidence),
+        topBullish: confluence.topBullish.map((f) => `${f.label}: ${f.detail}`),
+        topBearish: confluence.topBearish.map((f) => `${f.label}: ${f.detail}`),
+        categoryScores: cats,
+      };
+    }
+    if (regimeLive) {
+      out.regime = {
+        regime: regimeLive.regime,
+        confidence: {
+          overall: Math.round(regimeLive.confidence.overall),
+          trend: Math.round(regimeLive.confidence.trend),
+          structure: Math.round(regimeLive.confidence.structure),
+          momentum: Math.round(regimeLive.confidence.momentum),
+          volatility: Math.round(regimeLive.confidence.volatility),
+        },
+        barsInRegime: regimeLive.barsInRegime,
+      };
+    }
+    return out;
+  };
 
   const refresh = async () => {
     if (!ticker) return;
@@ -101,6 +168,8 @@ export function AISignalPanel({
         change24h: ticker.priceChangePercent,
         volume24h: ticker.quoteVolume,
         openPosition: null,
+        // #15 — Inject real confluence + regime from the dashboard
+        ...buildContextPayload(),
       };
       const d = isElectron()
         ? await fetchAISignal(payload)
@@ -178,12 +247,10 @@ export function AISignalPanel({
       localScore: local.score,
       localConfidence: local.confidence,
       localReasons,
-      // Confluence/regime are computed upstream by ConfluenceGauge /
-      // RegimeDetector; here we provide reasonable defaults so the explainer
-      // works even when those panels haven't loaded yet.
-      confluenceScore: 50,
-      confluenceTone: "neutral" as const,
-      regime: "RANGE" as const,
+      // #15 — Real confluence/regime from the dashboard (not defaults)
+      confluenceScore: confluence ? Math.round(confluence.score) : 50,
+      confluenceTone: confluence ? confluence.tone : ("neutral" as const),
+      regime: regimeLive ? regimeLive.regime : ("RANGE" as const),
       aiAction: ai?.action ?? null,
       aiConfidence: ai?.confidence ?? null,
       aiRationale: ai?.rationale ?? null,

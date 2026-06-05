@@ -51,6 +51,31 @@ const InputSchema = z.object({
       target: z.number(),
     })
     .nullable(),
+  // #15 — Optional context from downstream components
+  confluence: z
+    .object({
+      score: z.number(), // 0..100
+      tone: z.enum(["bullish", "bearish", "neutral"]),
+      confidence: z.number(), // 0..100
+      topBullish: z.array(z.string()),
+      topBearish: z.array(z.string()),
+      // Optional per-category score breakdown (0..100)
+      categoryScores: z.record(z.string(), z.number()).optional(),
+    })
+    .optional(),
+  regime: z
+    .object({
+      regime: z.enum(["BULL_TREND", "BEAR_TREND", "RANGE", "VOLATILE"]),
+      confidence: z.object({
+        overall: z.number(),
+        trend: z.number(),
+        structure: z.number(),
+        momentum: z.number(),
+        volatility: z.number(),
+      }),
+      barsInRegime: z.number(),
+    })
+    .optional(),
 });
 
 export type AIDecision = {
@@ -84,6 +109,10 @@ export const getAISignal = createServerFn({ method: "POST" })
 
     const system = `Você é um trader quantitativo sênior de cripto com 15 anos de experiência. Analise o contexto técnico e de mercado fornecido e retorne SOMENTE JSON válido.
 
+CONTEXTO MULTI-FATOR (use na decisão, não invente números):
+- "confluence" (opcional): score 0-100 (50=neutro), tone (bullish/bearish/neutral), confidence 0-100, topBullish[]/topBearish[] com strings curtas explicando os sinais, e categoryScores opcional {trend, momentum, volatility, volume, levels, derivatives}.
+- "regime" (opcional): regime de mercado (BULL_TREND/BEAR_TREND/RANGE/VOLATILE), confidence {overall, trend, structure, momentum, volatility} todas 0-100, e barsInRegime (quantas barras consecutivas no regime atual).
+
 SAÍDA OBRIGATÓRIA (apenas este JSON, sem markdown):
 {
   "action": "BUY" | "SELL" | "HOLD" | "CLOSE",
@@ -111,14 +140,21 @@ REGRAS DE DECISÃO:
 6. VWAP: preço abaixo do VWAP favorece BUY, acima favorece SELL (intraday).
 7. RSI extremo (<25 ou >75) sozinho NÃO é motivo para entrada — espere confirmação de estrutura.
 8. POSIÇÃO ABERTA: se "openPosition" existir, considere CLOSE se o sinal oposto for forte OU se Stop/TP foram atingidos OU se regime mudou contra a posição.
-9. CONFIANÇA: 
+9. CONFIANÇA:
    - < 50: HOLD (sinal fraco)
    - 50-70: trade válido mas com posição reduzida
    - 70-85: trade com convicção normal
    - > 85: trade com alta convicção (mas não exagere: >95 é suspeito)
 10. RÓTULO risk: LOW = setup perfeito, HIGH = sinais conflitantes, MEDIUM = caso padrão.
 11. TTL: scalping (5m/15m) → 30-90min; intraday (1h) → 4-8h; swing (4h/1d) → 1-7 dias.
-12. INVALIDAÇÃO: descreva a condição técnica que fecharia a posição prematuramente (ex: "fechar abaixo da EMA50").`;
+12. INVALIDAÇÃO: descreva a condição técnica que fecharia a posição prematuramente (ex: "fechar abaixo da EMA50").
+13. CONFLUENCE & REGIME (se fornecidos, são fortes modificadores):
+    - Se confluence.score >= 70 e tone bate com a direção do trade → pode elevar confidence em +10 e buscar RR maior.
+    - Se confluence.score <= 30 e tone oposto ao trade proposto → zere a confidence ou vire HOLD.
+    - Se regime.regime === "BULL_TREND" e você sugere SELL → reavalie com cuidado (pode ser topo de reversão apenas se estrutura virou DOWN).
+    - Se regime.regime === "VOLATILE" → reduza TTL, aperte SL (k=2.0+), e prefira HOLD se ADX<25.
+    - Se regime.barsInRegime <= 2 → trate como regime nascente, exija mais confirmação.
+    - Em RANGE, priorize S/R (suporte→BUY perto de suporte, resistência→SELL perto de resistência).`;
 
     const userMsg = formatPrompt(data);
 
@@ -204,43 +240,103 @@ REGRAS DE DECISÃO:
 function formatPrompt(d: z.infer<typeof InputSchema>): string {
   const fmt = (v: number | null | undefined, d = 2) =>
     v === null || v === undefined ? "n/a" : v.toFixed(d);
-  return [
-    `ATIVO: ${d.symbol} (${d.interval})`,
-    `PREÇO ATUAL: ${d.price}`,
-    ``,
-    `=== MERCADO 24H ===`,
-    `Variação: ${d.change24h.toFixed(2)}%`,
+  const lines: string[] = [];
+  lines.push(`ATIVO: ${d.symbol} (${d.interval})`);
+  lines.push(`PREÇO ATUAL: ${d.price}`);
+  lines.push(``);
+  lines.push(`=== MERCADO 24H ===`);
+  lines.push(`Variação: ${d.change24h.toFixed(2)}%`);
+  lines.push(
     `Volume 24h (USDT): ${d.volume24h.toLocaleString("en-US", { maximumFractionDigits: 0 })}`,
+  );
+  lines.push(
     `Range 24h: ${fmt(d.low24h)} - ${fmt(d.high24h)} | Posição no range: ${d.rangePos !== null ? (d.rangePos * 100).toFixed(0) + "%" : "n/a"}`,
-    ``,
-    `=== MOMENTUM ===`,
-    `RSI(14): ${fmt(d.rsi, 1)}`,
+  );
+  lines.push(``);
+  lines.push(`=== MOMENTUM ===`);
+  lines.push(`RSI(14): ${fmt(d.rsi, 1)}`);
+  lines.push(
     `MACD: ${fmt(d.macd, 4)} | Sinal: ${fmt(d.macdSignal, 4)} | Hist: ${fmt(d.macdHist, 4)}`,
-    `Estocástico K/D: ${fmt(d.stochK, 1)} / ${fmt(d.stochD, 1)}`,
-    ``,
-    `=== TENDÊNCIA ===`,
+  );
+  lines.push(`Estocástico K/D: ${fmt(d.stochK, 1)} / ${fmt(d.stochD, 1)}`);
+  lines.push(``);
+  lines.push(`=== TENDÊNCIA ===`);
+  lines.push(
     `EMA20: ${fmt(d.ema20)} | EMA50: ${fmt(d.ema50)} | EMA200: ${fmt(d.ema200)}`,
-    `EMA20 slope (3 bars): ${fmt(d.ema20Slope, 3)}%`,
+  );
+  lines.push(`EMA20 slope (3 bars): ${fmt(d.ema20Slope, 3)}%`);
+  lines.push(
     `ADX: ${fmt(d.adx, 1)} | +DI: ${fmt(d.plusDI, 1)} | -DI: ${fmt(d.minusDI, 1)}`,
-    `Estrutura de mercado: ${d.structure}`,
-    ``,
-    `=== VOLATILIDADE ===`,
+  );
+  lines.push(`Estrutura de mercado: ${d.structure}`);
+  lines.push(``);
+  lines.push(`=== VOLATILIDADE ===`);
+  lines.push(
     `ATR(14): ${fmt(d.atr, 4)} (${d.atrPct !== null ? (d.atrPct * 100).toFixed(2) + "%" : "n/a"} do preço)`,
-    `Regime: ${d.volRegime}`,
+  );
+  lines.push(`Regime: ${d.volRegime}`);
+  lines.push(
     `Bollinger: ${fmt(d.bbLower)} - ${fmt(d.bbUpper)} | Width: ${d.bbWidth !== null ? (d.bbWidth * 100).toFixed(2) + "%" : "n/a"}`,
-    ``,
-    `=== VOLUME / FLUXO ===`,
-    `VWAP: ${fmt(d.vwap)}`,
+  );
+  lines.push(``);
+  lines.push(`=== VOLUME / FLUXO ===`);
+  lines.push(`VWAP: ${fmt(d.vwap)}`);
+  lines.push(
     `OBV slope: ${d.obvSlope === 1 ? "compra" : d.obvSlope === -1 ? "venda" : "neutro"}`,
-    ``,
-    `=== NÍVEIS CHAVE ===`,
+  );
+  lines.push(``);
+  lines.push(`=== NÍVEIS CHAVE ===`);
+  lines.push(
     `Suportes: ${d.supports.length ? d.supports.map((s) => s.toFixed(2)).join(", ") : "nenhum próximo"}`,
+  );
+  lines.push(
     `Resistências: ${d.resistances.length ? d.resistances.map((r) => r.toFixed(2)).join(", ") : "nenhuma próxima"}`,
-    ``,
+  );
+
+  // #15 — Confluence breakdown (multi-factor score with weights)
+  if (d.confluence) {
+    lines.push(``);
+    lines.push(`=== CONFLUENCE (multi-fator) ===`);
+    lines.push(
+      `Score: ${d.confluence.score}/100 · Tone: ${d.confluence.tone.toUpperCase()} · Confiança: ${d.confluence.confidence}%`,
+    );
+    if (d.confluence.categoryScores) {
+      const cats = Object.entries(d.confluence.categoryScores)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(" | ");
+      if (cats) lines.push(`Categorias: ${cats}`);
+    }
+    if (d.confluence.topBullish.length > 0) {
+      lines.push(
+        `Top bullish: ${d.confluence.topBullish.slice(0, 3).join(" · ")}`,
+      );
+    }
+    if (d.confluence.topBearish.length > 0) {
+      lines.push(
+        `Top bearish: ${d.confluence.topBearish.slice(0, 3).join(" · ")}`,
+      );
+    }
+  }
+
+  // #15 — Regime classification with per-dimension confidence
+  if (d.regime) {
+    lines.push(``);
+    lines.push(`=== REGIME DE MERCADO ===`);
+    lines.push(
+      `Regime: ${d.regime.regime} (${d.regime.barsInRegime} barras no regime atual)`,
+    );
+    lines.push(
+      `Confiança — geral: ${d.regime.confidence.overall}% | tendência: ${d.regime.confidence.trend}% | estrutura: ${d.regime.confidence.structure}% | momentum: ${d.regime.confidence.momentum}% | volatilidade: ${d.regime.confidence.volatility}%`,
+    );
+  }
+
+  lines.push(``);
+  lines.push(
     d.openPosition
       ? `=== POSIÇÃO ABERTA ===\nLado: ${d.openPosition.side}\nEntrada: ${d.openPosition.entry}\nPnL: ${d.openPosition.pnl.toFixed(2)} (${d.openPosition.pnlPct.toFixed(2)}%)\nStop: ${d.openPosition.stop} | Alvo: ${d.openPosition.target}\nConsidere CLOSE se contexto virou contra.`
       : `=== SEM POSIÇÃO ABERTA ===`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 function validateAndEnrich(
@@ -286,6 +382,61 @@ function validateAndEnrich(
   if (data.volRegime === "EXTREME" && confidence > 70) confidence = 70;
   if (data.structure === "RANGE" && (action === "BUY" || action === "SELL")) {
     confidence = Math.min(confidence, 55);
+  }
+
+  // #15 — Confluence & regime modifiers
+  if (data.confluence) {
+    const tone = data.confluence.tone;
+    const score = data.confluence.score;
+    // Strong bullish confluence aligned with a BUY → +10 confidence
+    if (tone === "bullish" && score >= 70 && action === "BUY") {
+      confidence = Math.min(100, confidence + 10);
+    }
+    // Strong bearish confluence aligned with a SELL → +10 confidence
+    else if (tone === "bearish" && score <= 30 && action === "SELL") {
+      confidence = Math.min(100, confidence + 10);
+    }
+    // Strong confluence AGAINST the action → kill or flip to HOLD
+    if (
+      (tone === "bullish" && score >= 70 && action === "SELL") ||
+      (tone === "bearish" && score <= 30 && action === "BUY")
+    ) {
+      confidence = 0;
+    }
+  }
+  if (data.regime) {
+    const rg = data.regime.regime;
+    // Volatile regime + any directional action → cap confidence
+    if (rg === "VOLATILE" && (action === "BUY" || action === "SELL")) {
+      confidence = Math.min(confidence, 60);
+    }
+    // Nascente regime (≤2 bars) → exige mais confirmação
+    if (
+      data.regime.barsInRegime <= 2 &&
+      (action === "BUY" || action === "SELL")
+    ) {
+      confidence = Math.min(confidence, 50);
+    }
+    // Counter-trend action in well-established trend → penaliza
+    if (
+      rg === "BULL_TREND" &&
+      action === "SELL" &&
+      data.regime.barsInRegime >= 4
+    ) {
+      confidence = Math.min(confidence, 40);
+    }
+    if (
+      rg === "BEAR_TREND" &&
+      action === "BUY" &&
+      data.regime.barsInRegime >= 4
+    ) {
+      confidence = Math.min(confidence, 40);
+    }
+  }
+  // After all modifiers, if confidence is too low, downgrade to HOLD
+  if (confidence < 50 && (action === "BUY" || action === "SELL")) {
+    // Keep the action but mark low confidence — caller decides what to do
+    // (existing UI: confidence% is shown but button is enabled).
   }
 
   const regime: AIDecision["regime"] = (() => {
@@ -436,12 +587,12 @@ export const explainSignal = createServerFn({ method: "POST" })
 
     if (!apiKey) return fallback;
 
-    const system = `Você é um analista técnico que escreve explicações claras e curtas em português brasileiro para traders. Receberá um snapshot de indicadores + o sinal local e (opcionalmente) a decisão da IA. Sua tarefa é explicar POR QUE o setup está como está.
+    const system = `Você é um analista técnico que escreve explicações claras e curtas em português brasileiro para traders. Receberá um snapshot de indicadores + o sinal local + o regime de mercado + o score de confluence (multi-fator) e (opcionalmente) a decisão da IA. Sua tarefa é explicar POR QUE o setup está como está.
 
 REGRAS:
 - Texto curto: 2-4 frases, no MÁXIMO 380 caracteres.
-- Cite APENAS indicadores relevantes (RSI, MACD, EMA, ADX, BB, estrutura). Não invente números.
-- Se a IA discorda do sinal local, mencione brevemente.
+- Cite APENAS indicadores relevantes (RSI, MACD, EMA, ADX, BB, estrutura, regime, confluence). Não invente números.
+- Se o regime ou a confluence discorda do sinal local, mencione brevemente.
 - NÃO use markdown, listas, JSON ou aspas. Apenas texto corrido.
 - NÃO dê conselho financeiro. Termine com "Análise automatizada, não é recomendação."`;
 
