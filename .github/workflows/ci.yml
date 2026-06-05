@@ -11,6 +11,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Keep all files in their LF form regardless of platform
+          # (otherwise Windows runners convert to CRLF and prettier fails)
+          autocrlf: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
