@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
+import { toast } from "sonner";
 import {
   Sparkles,
   TrendingUp,
@@ -46,13 +47,13 @@ import {
 import type { IndicatorSnapshot, LocalSignal } from "@/lib/indicators";
 import type { Ticker24h } from "@/lib/binance";
 
-export function AISignalPanel({
+function AISignalPanelImpl({
   symbol,
   interval,
   snap,
   local,
   ticker,
-  onExecute,
+  onExecute: onExecuteProp,
 }: {
   symbol: string;
   interval: string;
@@ -218,6 +219,36 @@ export function AISignalPanel({
     void telegramStatus().then((s) => setTgReady(!!s?.configured));
   }, []);
 
+  // #19 — Listen for keyboard-shortcut events dispatched from the dashboard.
+  // The events are "rt:refresh", "rt:execute", "rt:tg", "rt:toggleConsensus".
+  // We expose them via window so the parent route's keyboard hook can fire
+  // them without prop drilling. The events are bubbleable and
+  // cancelable=false (the listener decides what to do).
+  useEffect(() => {
+    const onRefresh = () => void refresh();
+    const onExecute = () => {
+      if (ai && ai.action !== "HOLD") {
+        onExecuteProp(ai);
+      }
+    };
+    const onTg = () => {
+      if (ai) void doSendTelegram(ai);
+    };
+    const onToggleConsensus = () =>
+      setMode((m) => (m === "single" ? "consensus" : "single"));
+    window.addEventListener("rt:refresh", onRefresh);
+    window.addEventListener("rt:execute", onExecute);
+    window.addEventListener("rt:tg", onTg);
+    window.addEventListener("rt:toggleConsensus", onToggleConsensus);
+    return () => {
+      window.removeEventListener("rt:refresh", onRefresh);
+      window.removeEventListener("rt:execute", onExecute);
+      window.removeEventListener("rt:tg", onTg);
+      window.removeEventListener("rt:toggleConsensus", onToggleConsensus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ai]);
+
   const doSendTelegram = async (signal: AIDecision) => {
     setTgSending(true);
     setTgLastResult(null);
@@ -228,11 +259,21 @@ export function AISignalPanel({
       });
       if (r && r.ok) {
         setTgLastResult(`✅ Enviado (id ${r.messageId})`);
+        // #18 — toast on success
+        toast.success("Sinal enviado ao Telegram", {
+          description: `${symbol} ${interval} · ${signal.action} (id ${r.messageId})`,
+        });
       } else {
         setTgLastResult(`❌ ${r?.error ?? "indisponível"}`);
+        toast.error("Falha ao enviar ao Telegram", {
+          description: r?.error ?? "indisponível",
+        });
       }
     } catch (e) {
       setTgLastResult(`❌ ${e instanceof Error ? e.message : "erro"}`);
+      toast.error("Erro Telegram", {
+        description: e instanceof Error ? e.message : "erro",
+      });
     } finally {
       setTgSending(false);
     }
@@ -614,7 +655,7 @@ export function AISignalPanel({
                 </div>
               )}
               <button
-                onClick={() => onExecute(ai)}
+                onClick={() => onExecuteProp(ai)}
                 disabled={ai.action === "HOLD"}
                 className={`mt-3 w-full rounded-md px-3 py-2 text-xs font-semibold transition ${
                   ai.action === "BUY"
@@ -644,6 +685,15 @@ export function AISignalPanel({
     </div>
   );
 }
+
+// #20 — React.memo to avoid re-renders when the dashboard re-renders for
+// unrelated reasons (ticker tick, snap update on a different symbol, etc).
+// Equality on props is shallow; onExecuteProp identity matters but the
+// parent uses an inline arrow — we accept that re-renders happen on
+// parent re-render. Real win is preventing re-renders when AI
+// state inside this component settles.
+const AISignalPanelMemo = memo(AISignalPanelImpl);
+export { AISignalPanelMemo as AISignalPanel };
 
 function ModelRow({ m }: { m: ConsensusModelDecision }) {
   const tone =

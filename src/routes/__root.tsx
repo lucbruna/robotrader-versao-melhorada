@@ -8,6 +8,9 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 
+import { Toaster } from "@/components/ui/sonner";
+import { KeyboardShortcutsButton } from "@/components/ui/keyboard-shortcuts";
+
 import appCss from "../styles.css?url";
 
 function NotFoundComponent() {
@@ -130,6 +133,12 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <Outlet />
+      <Toaster
+        position="bottom-right"
+        richColors
+        closeButton
+        toastOptions={{ duration: 4000 }}
+      />
     </QueryClientProvider>
   );
 }

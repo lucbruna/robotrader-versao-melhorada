@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
@@ -47,6 +47,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { FadeIn } from "@/components/ui/animated";
+import { KeyboardShortcutsButton } from "@/components/ui/keyboard-shortcuts";
+import { useKeyboardShortcuts } from "@/lib/hooks/useKeyboardShortcuts";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -214,6 +218,27 @@ function Dashboard() {
 
   const up = (ticker?.priceChangePercent ?? 0) >= 0;
 
+  // #19 — Keyboard shortcuts (g+d, g+b, g+s, g+j, r, shift+r, t, c, ?)
+  // We dispatch CustomEvents instead of calling refs because AISignalPanel
+  // is a child and would otherwise need a forwardRef + imperative handle.
+  const navigate = useNavigate();
+
+  useKeyboardShortcuts(
+    useMemo(
+      () => ({
+        "g+d": () => navigate({ to: "/" }),
+        "g+b": () => navigate({ to: "/backtest" }),
+        "g+s": () => navigate({ to: "/scanner" }),
+        "g+j": () => navigate({ to: "/journal" }),
+        r: () => window.dispatchEvent(new Event("rt:refresh")),
+        "shift+r": () => window.dispatchEvent(new Event("rt:execute")),
+        t: () => window.dispatchEvent(new Event("rt:tg")),
+        c: () => window.dispatchEvent(new Event("rt:toggleConsensus")),
+      }),
+      [navigate],
+    ),
+  );
+
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
       {/* Top bar */}
@@ -264,6 +289,7 @@ function Dashboard() {
           >
             <BookText className="size-3.5" />
           </Link>
+          <KeyboardShortcutsButton />
           <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
             <DialogTrigger asChild>
               <button
@@ -397,33 +423,36 @@ function Dashboard() {
 
       {/* Main grid */}
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_280px_340px] xl:grid-cols-[1fr_280px_340px_320px]">
-        {/* Chart + indicators */}
-        <div className="flex min-h-0 flex-col border-r border-border">
-          <div className="min-h-0 flex-1">
-            {merged.length > 0 ? (
-              <CandleChart
-                data={merged}
-                liveCandle={live}
-                overlays={overlays}
-                snap={snap}
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                Carregando candles…
+        {/* #17 — fade-in chart + indicators when symbol/interval change */}
+        <FadeIn key={`${symbol}-${interval}-chart`} className="contents">
+          {/* Chart + indicators */}
+          <div className="flex min-h-0 flex-col border-r border-border">
+            <div className="min-h-0 flex-1">
+              {merged.length > 0 ? (
+                <CandleChart
+                  data={merged}
+                  liveCandle={live}
+                  overlays={overlays}
+                  snap={snap}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                  Carregando candles…
+                </div>
+              )}
+            </div>
+            {snap && (
+              <div className="border-t border-border bg-sidebar">
+                <IndicatorsPanel snap={snap} />
               </div>
             )}
           </div>
-          {snap && (
-            <div className="border-t border-border bg-sidebar">
-              <IndicatorsPanel snap={snap} />
-            </div>
-          )}
-        </div>
 
-        {/* Order book */}
-        <div className="border-r border-border bg-sidebar">
-          <OrderBookPanel symbol={symbol} />
-        </div>
+          {/* Order book */}
+          <div className="border-r border-border bg-sidebar">
+            <OrderBookPanel symbol={symbol} />
+          </div>
+        </FadeIn>
 
         {/* Confluence + Regime + AI + Bot stacked */}
         <div className="grid min-h-0 grid-rows-[auto_auto_1fr_1fr] border-r border-border bg-sidebar">
@@ -444,11 +473,17 @@ function Dashboard() {
                 onExecute={(d) => {
                   if (d.action === "CLOSE") {
                     setManualOrder({ side: "BUY", decision: d });
+                    toast.info("Fechar posição aberta", {
+                      description: `conf ${d.confidence}%`,
+                    });
                     return;
                   }
                   setManualOrder({
                     side: d.action === "SELL" ? "SELL" : "BUY",
                     decision: d,
+                  });
+                  toast.success(`Ordem ${d.action} (simulada)`, {
+                    description: `${symbol} · entry ${d.entry.toFixed(2)} · conf ${d.confidence}%`,
                   });
                 }}
               />
