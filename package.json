@@ -1,7 +1,7 @@
 {
   "name": "robotrader-ai",
   "productName": "RoboTrader AI",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Robô de trading com IA para Binance — paper trading com ATR stops, IA Gemini e risk engine",
   "author": "RoboTrader AI",
   "private": true,
